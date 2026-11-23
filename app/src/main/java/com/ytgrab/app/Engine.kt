@@ -94,6 +94,67 @@ object Engine {
         }
     }
 
+    suspend fun formats(url: String): FormatInfo = withContext(Dispatchers.IO) {
+        if (!ready.value) throw IllegalStateException(status.value)
+        val req = YoutubeDLRequest(url)
+        req.addOption("--dump-json")
+        req.addOption("--no-playlist")
+        req.addOption("--no-warnings")
+        val res = YoutubeDL.getInstance().execute(req, "info-" + System.nanoTime()) { _, _, _ -> }
+        val line = res.out.lineSequence().map { it.trim() }.firstOrNull { it.startsWith("{") }
+            ?: throw IllegalStateException("No format info")
+        val o = JSONObject(line)
+        val dur = if (o.isNull("duration")) 0.0 else o.optDouble("duration", 0.0)
+        val arr = o.optJSONArray("formats") ?: throw IllegalStateException("No formats")
+
+        fun num(f: JSONObject, k: String): Double = if (f.isNull(k)) 0.0 else f.optDouble(k, 0.0)
+        fun size(f: JSONObject): Long {
+            val fs = num(f, "filesize")
+            if (fs > 0) return fs.toLong()
+            val fa = num(f, "filesize_approx")
+            if (fa > 0) return fa.toLong()
+            val tbr = num(f, "tbr")
+            return if (tbr > 0 && dur > 0) (tbr * 125 * dur).toLong() else 0L
+        }
+
+        val anyV = HashMap<Int, Long>()
+        val avc = HashMap<Int, Long>()
+        val muxed = HashMap<Int, Long>()
+        var aBest = 0L
+        var aM4a = 0L
+        var aOpus = 0L
+        for (i in 0 until arr.length()) {
+            val f = arr.getJSONObject(i)
+            if (f.str("ext") == "mhtml") continue
+            val vc = f.str("vcodec")
+            val ac = f.str("acodec")
+            val hasV = vc.isNotBlank() && vc != "none"
+            val hasA = ac.isNotBlank() && ac != "none"
+            val h = f.optInt("height", 0)
+            val s = size(f)
+            if (hasV && !hasA) {
+                if (h > 0) {
+                    anyV[h] = maxOf(anyV[h] ?: 0L, s)
+                    if (vc.startsWith("avc1")) avc[h] = maxOf(avc[h] ?: 0L, s)
+                }
+            } else if (!hasV && hasA) {
+                aBest = maxOf(aBest, s)
+                if (f.str("ext") == "m4a") aM4a = maxOf(aM4a, s)
+                if (ac.startsWith("opus")) aOpus = maxOf(aOpus, s)
+            } else if (hasV && hasA && h > 0) {
+                muxed[h] = maxOf(muxed[h] ?: 0L, s)
+            }
+        }
+        val audioForMux = if (aM4a > 0) aM4a else aBest
+        val heights = (anyV.keys + muxed.keys).toSet().sortedDescending()
+        val sizes = heights.map { h ->
+            val v = avc[h] ?: anyV[h]
+            val total = if (v == null) (muxed[h] ?: 0L) else if (v > 0) v + audioForMux else 0L
+            h to total
+        }
+        FormatInfo(dur.toLong(), sizes, aBest, aM4a, aOpus)
+    }
+
     // ---------- download ----------
 
     private fun buildRequest(t: DownloadTask, tmp: File, embedArt: Boolean): YoutubeDLRequest {

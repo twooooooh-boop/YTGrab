@@ -3,8 +3,6 @@ name: Build APK
 on:
   push:
     branches: [ main, master ]
-    tags: [ 'v*' ]
-  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -31,21 +29,13 @@ jobs:
         with:
           gradle-version: '8.10.2'
 
-      - name: Build debug APKs
+      - name: Build debug APK
         run: gradle assembleDebug --stacktrace
-
-      - name: Upload APKs
-        uses: actions/upload-artifact@v4
-        with:
-          name: YTGrab-debug-apks
-          path: app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
 
       - name: Rename APK
         run: cp app/build/outputs/apk/debug/app-debug.apk YTGrab-build-${{ github.run_number }}.apk
 
       - name: Publish release
-        if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}

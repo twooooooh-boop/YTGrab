@@ -25,9 +25,7 @@ Use a Personal Access Token (classic, `repo` + `workflow` scopes) as the passwor
 
 ## Build
 
-GitHub -> Actions tab -> "Build APK" -> run (it also runs on every push).
-Download the artifact `YTGrab-debug-apks`; install `app-arm64-v8a-debug.apk` on most phones
-(or `app-universal-debug.apk` if unsure).
+Every push builds automatically and publishes a Release (build-N) with one APK: `YTGrab-build-N.apk`.
 
 The workflow installs Gradle itself, so no gradle wrapper is needed.
 To add one for Android Studio: run `gradle wrapper --gradle-version 8.10.2` and commit the result.

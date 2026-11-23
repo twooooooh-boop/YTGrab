@@ -8,6 +8,7 @@ import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -240,25 +241,112 @@ fun OptionsCard() {
 @Composable
 fun ResultRow(item: SearchItem) {
     val ctx = LocalContext.current
-    Card(Modifier.fillMaxWidth()) {
-        Row(Modifier.padding(8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            AsyncImage(
-                model = item.thumb,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.width(120.dp).height(68.dp).clip(RoundedCornerShape(8.dp)),
-            )
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(item.title, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
-                Text(
-                    listOf(item.channel, fmtDur(item.durationSec)).filter { it.isNotBlank() }.joinToString(" • "),
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+    var expanded by rememberSaveable(item.url) { mutableStateOf(false) }
+    var mode by rememberSaveable(item.url) { mutableStateOf(Prefs.mode) }
+    var height by rememberSaveable(item.url) { mutableStateOf(Prefs.videoHeight) }
+    var aFmt by rememberSaveable(item.url) { mutableStateOf(Prefs.audioFormat) }
+    var aBr by rememberSaveable(item.url) { mutableStateOf(Prefs.audioBitrate) }
+    var info by remember(item.url) { mutableStateOf(FormatCache.get(item.url)) }
+    var loading by remember(item.url) { mutableStateOf(false) }
+    var failed by remember(item.url) { mutableStateOf(false) }
+
+    LaunchedEffect(expanded) {
+        if (expanded && info == null && !loading) {
+            loading = true
+            failed = false
+            try {
+                val i = Engine.formats(item.url)
+                FormatCache.put(item.url, i)
+                info = i
+                if (height != 0 && i.videoSizes.isNotEmpty() && i.videoSizes.none { it.first == height }) {
+                    height = i.videoSizes.firstOrNull { it.first <= height }?.first ?: 0
+                }
+            } catch (e: Throwable) {
+                failed = true
+            }
+            loading = false
+        }
+    }
+
+    val sel = info?.let { if (mode == Mode.VIDEO) it.videoSize(height) else audioSize(it, aFmt, aBr) } ?: 0L
+
+    Card(Modifier.fillMaxWidth().clickable { expanded = !expanded }) {
+        Column {
+            Row(Modifier.padding(8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                AsyncImage(
+                    model = item.thumb,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.width(120.dp).height(68.dp).clip(RoundedCornerShape(8.dp)),
                 )
-                FilledTonalButton(onClick = {
-                    DownloadCenter.enqueue(ctx, listOf(item), Prefs.options())
-                    Toast.makeText(ctx, "Added to queue", Toast.LENGTH_SHORT).show()
-                }) { Text(if (Prefs.mode == Mode.VIDEO) "Download video" else "Download audio") }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(item.title, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        listOf(item.channel, fmtDur(item.durationSec)).filter { it.isNotBlank() }.joinToString(" • "),
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        if (expanded) "Tap to close" else "Tap to choose format & size",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+            if (expanded) {
+                Column(
+                    Modifier.padding(horizontal = 8.dp).padding(bottom = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    ChipRow(
+                        listOf(Mode.VIDEO, Mode.AUDIO), mode,
+                        { if (it == Mode.VIDEO) "Video" else "Audio" },
+                    ) { mode = it }
+
+                    if (loading) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            Text("Getting sizes…", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                    if (failed) {
+                        Text("Couldn't read sizes, you can still download.", style = MaterialTheme.typography.bodySmall)
+                    }
+
+                    if (mode == Mode.VIDEO) {
+                        val opts = listOf(0) + (info?.videoSizes?.map { it.first } ?: listOf(2160, 1440, 1080, 720, 480, 360, 240, 144))
+                        ChipRow(
+                            opts, height,
+                            { h ->
+                                val s = info?.videoSize(h) ?: 0L
+                                (if (h == 0) "Best" else "${h}p") + (if (s > 0) " · ${fmtSize(s)}" else "")
+                            },
+                        ) { height = it }
+                    } else {
+                        ChipRow(listOf("m4a", "mp3", "opus"), aFmt, { it }) { aFmt = it }
+                        ChipRow(
+                            listOf("Best", "320K", "192K", "128K"), aBr,
+                            { b ->
+                                val s = info?.let { audioSize(it, aFmt, b) } ?: 0L
+                                b + (if (s > 0) " · ≈${fmtSize(s)}" else "")
+                            },
+                        ) { aBr = it }
+                    }
+
+                    Button(onClick = {
+                        DownloadCenter.enqueue(
+                            ctx, listOf(item),
+                            Prefs.options().copy(mode = mode, videoHeight = height, audioFormat = aFmt, audioBitrate = aBr),
+                        )
+                        Toast.makeText(ctx, "Added to queue", Toast.LENGTH_SHORT).show()
+                        expanded = false
+                    }) {
+                        Text(
+                            (if (mode == Mode.VIDEO) "Download video" else "Download audio") +
+                                (if (sel > 0) " · ≈ ${fmtSize(sel)}" else "")
+                        )
+                    }
+                }
             }
         }
     }
