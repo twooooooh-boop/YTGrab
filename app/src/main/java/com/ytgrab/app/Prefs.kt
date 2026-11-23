@@ -18,6 +18,7 @@ object Prefs {
     var useAria2c by mutableStateOf(false)
     var squareCover by mutableStateOf(true)
     var maxParallel by mutableIntStateOf(2)
+    var ytClient by mutableStateOf("auto")
 
     fun load(c: Context) {
         val s = c.getSharedPreferences("ytgrab", Context.MODE_PRIVATE)
@@ -30,6 +31,7 @@ object Prefs {
         useAria2c = s.getBoolean("useAria2c", false)
         squareCover = s.getBoolean("squareCover", true)
         maxParallel = s.getInt("maxParallel", 2)
+        ytClient = s.getString("ytClient", "auto") ?: "auto"
     }
 
     fun save() {
@@ -42,6 +44,7 @@ object Prefs {
             ?.putBoolean("useAria2c", useAria2c)
             ?.putBoolean("squareCover", squareCover)
             ?.putInt("maxParallel", maxParallel)
+            ?.putString("ytClient", ytClient)
             ?.apply()
     }
 

@@ -39,10 +39,10 @@ object Engine {
 
     suspend fun updateYtDlp(app: Context): String = withContext(Dispatchers.IO) {
         try {
-            val r = YoutubeDL.getInstance().updateYoutubeDL(app)
-            "yt-dlp update: $r"
+            val r = YoutubeDL.getInstance().updateYoutubeDL(app, YoutubeDL.UpdateChannel.NIGHTLY)
+            "yt-dlp update: $r\nversion: ${YoutubeDL.getInstance().version(app)}"
         } catch (e: Throwable) {
-            "Update failed: ${e.message}"
+            "Update failed: ${e::class.java.simpleName}: ${e.message}"
         }
     }
 
@@ -100,6 +100,7 @@ object Engine {
         req.addOption("--dump-json")
         req.addOption("--no-playlist")
         req.addOption("--no-warnings")
+        applyClient(req)
         val res = YoutubeDL.getInstance().execute(req, "info-" + System.nanoTime()) { _, _, _ -> }
         val line = res.out.lineSequence().map { it.trim() }.firstOrNull { it.startsWith("{") }
             ?: throw IllegalStateException("No format info")
@@ -162,6 +163,7 @@ object Engine {
         val r = YoutubeDLRequest(t.item.url)
         r.addOption("--no-playlist")
         r.addOption("--no-mtime")
+        applyClient(r)
         r.addOption("--retries", "10")
         r.addOption("--fragment-retries", "10")
         r.addOption("-o", tmp.absolutePath + "/%(title).120B.%(ext)s")
@@ -202,6 +204,11 @@ object Engine {
             }
         }
         return r
+    }
+
+    private fun applyClient(r: YoutubeDLRequest) {
+        val c = Prefs.ytClient
+        if (c != "auto") r.addOption("--extractor-args", "youtube:player_client=$c")
     }
 
     private fun exec(r: YoutubeDLRequest, id: String, onProgress: (Float, Long) -> Unit) {

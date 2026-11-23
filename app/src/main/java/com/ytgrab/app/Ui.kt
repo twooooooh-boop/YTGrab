@@ -468,6 +468,18 @@ fun SettingsScreen() {
         ) { Prefs.squareCover = it; Prefs.save() }
 
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("YouTube client (for 403 errors)", style = MaterialTheme.typography.titleSmall)
+            ChipRow(
+                listOf("auto", "android_vr", "web_embedded", "tv", "mweb", "web_safari"),
+                Prefs.ytClient, { it },
+            ) { Prefs.ytClient = it; Prefs.save() }
+            Text(
+                "Leave on auto first. If a download fails with 403, pick another one and tap Retry in the Queue.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("yt-dlp engine", style = MaterialTheme.typography.titleSmall)
             Text(status, style = MaterialTheme.typography.bodySmall)
             Button(
