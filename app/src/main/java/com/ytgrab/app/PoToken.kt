@@ -203,7 +203,7 @@ class WebPoTokenProvider(private val app: Context) : PoTokenProvider {
                     cur?.close()
                     cur = Generator.create(app)
                     gen = cur
-                    visitorData = YoutubeParsingHelper.randomVisitorData(ContentCountry.DEFAULT)
+                    visitorData = fetchVisitorData()
                     streamingPot = cur.mint(visitorData)
                 }
                 Triple(cur!!, visitorData, streamingPot)
@@ -216,7 +216,30 @@ class WebPoTokenProvider(private val app: Context) : PoTokenProvider {
         }
     }
 
-    override fun getWebEmbedClientPoToken(videoId: String): PoTokenResult? = null
-    override fun getAndroidClientPoToken(videoId: String): PoTokenResult? = null
-    override fun getIosClientPoToken(videoId: String): PoTokenResult? = null
+}
+
+private fun fetchVisitorData(): String {
+    val version = "2.20251120.01.00"
+    val body = """{"context":{"client":{"hl":"en","gl":"US","clientName":"WEB","clientVersion":"$version"}}}"""
+    var last: Throwable? = null
+    for (endpoint in listOf("visitor_id", "guide")) {
+        try {
+            val req = okhttp3.Request.Builder()
+                .url("https://www.youtube.com/youtubei/v1/$endpoint?prettyPrint=false")
+                .post(body.toRequestBody("application/json".toMediaType()))
+                .header("User-Agent", UA_WEB)
+                .header("Origin", "https://www.youtube.com")
+                .header("X-YouTube-Client-Name", "1")
+                .header("X-YouTube-Client-Version", version)
+                .build()
+            Http.client.newCall(req).execute().use { r ->
+                if (!r.isSuccessful) throw RuntimeException("visitor data HTTP ${r.code}")
+                val v = JSONObject(r.body!!.string()).getJSONObject("responseContext").getString("visitorData")
+                if (v.isNotBlank()) return v
+            }
+        } catch (e: Throwable) {
+            last = e
+        }
+    }
+    throw RuntimeException("Could not get visitor data: ${last?.message}")
 }
