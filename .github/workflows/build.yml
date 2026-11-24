@@ -34,11 +34,24 @@ jobs:
         shell: bash
         run: |
           gradle assembleDebug --stacktrace 2>&1 | tee build.log
+          exit ${PIPESTATUS[0]}
 
-      - name: Show errors
+      - name: Put errors in the run summary
         if: failure()
         run: |
-          grep -E "^e: |What went wrong|Caused by|Could not resolve|error:" -A4 build.log | head -80
+          {
+            echo '### Build errors'
+            echo '```'
+            grep -E "^e: |What went wrong|Execution failed|Could not resolve|Duplicate class|D8:|error:" -A6 build.log | head -100
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload full log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
 
       - name: Rename APK
         run: |
