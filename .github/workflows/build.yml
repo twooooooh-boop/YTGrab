@@ -22,7 +22,8 @@ jobs:
           java-version: '17'
 
       - name: Accept Android SDK licenses
-        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
 
       - name: Set up Gradle (no wrapper needed)
         uses: gradle/actions/setup-gradle@v4
@@ -31,14 +32,17 @@ jobs:
 
       - name: Build debug APK
         shell: bash
-        run: gradle assembleDebug --stacktrace 2>&1 | tee build.log; exit ${PIPESTATUS[0]}
+        run: |
+          gradle assembleDebug --stacktrace 2>&1 | tee build.log
 
       - name: Show errors
         if: failure()
-        run: grep -E "^e: |What went wrong|Caused by|Could not resolve|error:" -A4 build.log | head -80
+        run: |
+          grep -E "^e: |What went wrong|Caused by|Could not resolve|error:" -A4 build.log | head -80
 
       - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk YTGrab-build-${{ github.run_number }}.apk
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk YTGrab-build-${{ github.run_number }}.apk
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
