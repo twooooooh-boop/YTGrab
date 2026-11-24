@@ -2,267 +2,228 @@ package com.ytgrab.app
 
 import android.content.ContentValues
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.os.Environment
 import android.provider.MediaStore
-import com.yausername.aria2c.Aria2c
-import com.yausername.ffmpeg.FFmpeg
-import com.yausername.youtubedl_android.YoutubeDL
-import com.yausername.youtubedl_android.YoutubeDLRequest
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
+import org.schabi.newpipe.extractor.NewPipe
+import org.schabi.newpipe.extractor.ServiceList
+import org.schabi.newpipe.extractor.StreamingService
+import org.schabi.newpipe.extractor.localization.ContentCountry
+import org.schabi.newpipe.extractor.localization.Localization
+import org.schabi.newpipe.extractor.playlist.PlaylistInfo
+import org.schabi.newpipe.extractor.search.SearchInfo
+import org.schabi.newpipe.extractor.services.youtube.YoutubeStreamExtractor
+import org.schabi.newpipe.extractor.services.youtube.linkHandler.YoutubeSearchQueryHandlerFactory
+import org.schabi.newpipe.extractor.stream.StreamInfo
+import org.schabi.newpipe.extractor.stream.StreamInfoItem
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.concurrent.atomic.AtomicLong
 
-/** Thin wrapper around yt-dlp (youtubedl-android): init, search, download, update. */
+/** YouTube access through the NewPipe extractor: search, stream list, download, mux, tag. */
 object Engine {
     val status = MutableStateFlow("Starting engine…")
     val ready = MutableStateFlow(false)
 
-    private val MEDIA_EXT = setOf("mp4", "mkv", "webm", "m4a", "mp3", "opus", "ogg", "flac", "mov", "aac", "wav")
-
     fun init(app: Context) {
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                YoutubeDL.getInstance().init(app)
-                FFmpeg.getInstance().init(app)
-                runCatching { Aria2c.getInstance().init(app) }
+                NewPipe.init(NpDownloader(), Localization.DEFAULT, ContentCountry.DEFAULT)
+                YoutubeStreamExtractor.setPoTokenProvider(WebPoTokenProvider(app.applicationContext))
                 ready.value = true
-                status.value = "Engine ready"
+                status.value = "Engine ready (NewPipe extractor)"
             } catch (e: Throwable) {
                 status.value = "Engine failed to start: ${e.message}"
             }
         }
     }
 
-    suspend fun updateYtDlp(app: Context): String = withContext(Dispatchers.IO) {
-        try {
-            val r = YoutubeDL.getInstance().updateYoutubeDL(app, YoutubeDL.UpdateChannel.NIGHTLY)
-            "yt-dlp update: $r\nversion: ${YoutubeDL.getInstance().version(app)}"
-        } catch (e: Throwable) {
-            "Update failed: ${e::class.java.simpleName}: ${e.message}"
-        }
-    }
-
     // ---------- search ----------
 
-    private fun JSONObject.str(k: String): String = if (isNull(k)) "" else optString(k)
+    private fun StreamInfoItem.toItem() = SearchItem(
+        id = url,
+        title = name ?: "(untitled)",
+        channel = uploaderName ?: "",
+        durationSec = duration.coerceAtLeast(0),
+        url = url,
+        thumb = thumbnails.maxByOrNull { it.height }?.url ?: "",
+    )
 
-    suspend fun search(query: String, count: Int = 15): List<SearchItem> = withContext(Dispatchers.IO) {
+    private fun StreamInfo.toItem() = SearchItem(
+        id = url,
+        title = name ?: "(untitled)",
+        channel = uploaderName ?: "",
+        durationSec = duration.coerceAtLeast(0),
+        url = url,
+        thumb = thumbnails.maxByOrNull { it.height }?.url ?: "",
+    )
+
+    suspend fun search(query: String): List<SearchItem> = withContext(Dispatchers.IO) {
         if (!ready.value) throw IllegalStateException(status.value)
         val q = query.trim()
-        val isUrl = q.startsWith("http://") || q.startsWith("https://")
-        val req = YoutubeDLRequest(if (isUrl) q else "ytsearch$count:$q")
-        req.addOption("--flat-playlist")
-        req.addOption("--dump-json")
-        req.addOption("--no-warnings")
-        req.addOption("--playlist-end", "100")
-        val res = YoutubeDL.getInstance().execute(req, "search-" + System.nanoTime()) { _, _, _ -> }
-        res.out.lineSequence()
-            .map { it.trim() }
-            .filter { it.startsWith("{") }
-            .mapNotNull { parse(it) }
-            .toList()
-    }
-
-    private fun parse(line: String): SearchItem? {
-        return try {
-            val o = JSONObject(line)
-            val id = o.str("id")
-            var url = o.str("webpage_url").ifBlank { o.str("url") }
-            if (!url.startsWith("http") && id.isNotBlank()) url = "https://www.youtube.com/watch?v=$id"
-            if (url.isBlank()) return null
-            var thumb = o.str("thumbnail")
-            if (thumb.isBlank()) {
-                val arr = o.optJSONArray("thumbnails")
-                if (arr != null && arr.length() > 0) thumb = arr.getJSONObject(arr.length() - 1).optString("url")
-            }
-            if (thumb.isBlank() && id.length == 11) thumb = "https://i.ytimg.com/vi/$id/hqdefault.jpg"
-            val dur = if (o.isNull("duration")) 0L else o.optDouble("duration", 0.0).toLong()
-            SearchItem(
-                id = id.ifBlank { url },
-                title = o.str("title").ifBlank { "(untitled)" },
-                channel = o.str("channel").ifBlank { o.str("uploader") },
-                durationSec = dur,
-                url = url,
-                thumb = thumb,
-            )
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    suspend fun formats(url: String): FormatInfo = withContext(Dispatchers.IO) {
-        if (!ready.value) throw IllegalStateException(status.value)
-        val req = YoutubeDLRequest(url)
-        req.addOption("--dump-json")
-        req.addOption("--no-playlist")
-        req.addOption("--no-warnings")
-        applyClient(req)
-        val res = YoutubeDL.getInstance().execute(req, "info-" + System.nanoTime()) { _, _, _ -> }
-        val line = res.out.lineSequence().map { it.trim() }.firstOrNull { it.startsWith("{") }
-            ?: throw IllegalStateException("No format info")
-        val o = JSONObject(line)
-        val dur = if (o.isNull("duration")) 0.0 else o.optDouble("duration", 0.0)
-        val arr = o.optJSONArray("formats") ?: throw IllegalStateException("No formats")
-
-        fun num(f: JSONObject, k: String): Double = if (f.isNull(k)) 0.0 else f.optDouble(k, 0.0)
-        fun size(f: JSONObject): Long {
-            val fs = num(f, "filesize")
-            if (fs > 0) return fs.toLong()
-            val fa = num(f, "filesize_approx")
-            if (fa > 0) return fa.toLong()
-            val tbr = num(f, "tbr")
-            return if (tbr > 0 && dur > 0) (tbr * 125 * dur).toLong() else 0L
-        }
-
-        val anyV = HashMap<Int, Long>()
-        val avc = HashMap<Int, Long>()
-        val muxed = HashMap<Int, Long>()
-        var aBest = 0L
-        var aM4a = 0L
-        var aOpus = 0L
-        for (i in 0 until arr.length()) {
-            val f = arr.getJSONObject(i)
-            if (f.str("ext") == "mhtml") continue
-            val vc = f.str("vcodec")
-            val ac = f.str("acodec")
-            val hasV = vc.isNotBlank() && vc != "none"
-            val hasA = ac.isNotBlank() && ac != "none"
-            val h = f.optInt("height", 0)
-            val s = size(f)
-            if (hasV && !hasA) {
-                if (h > 0) {
-                    anyV[h] = maxOf(anyV[h] ?: 0L, s)
-                    if (vc.startsWith("avc1")) avc[h] = maxOf(avc[h] ?: 0L, s)
+        val svc = ServiceList.YouTube
+        if (q.startsWith("http://") || q.startsWith("https://")) {
+            when (svc.getLinkTypeByUrl(q)) {
+                StreamingService.LinkType.STREAM -> {
+                    val info = StreamInfo.getInfo(q)
+                    StreamCache.put(info.url, info)
+                    StreamCache.put(q, info)
+                    listOf(info.toItem())
                 }
-            } else if (!hasV && hasA) {
-                aBest = maxOf(aBest, s)
-                if (f.str("ext") == "m4a") aM4a = maxOf(aM4a, s)
-                if (ac.startsWith("opus")) aOpus = maxOf(aOpus, s)
-            } else if (hasV && hasA && h > 0) {
-                muxed[h] = maxOf(muxed[h] ?: 0L, s)
+                StreamingService.LinkType.PLAYLIST -> {
+                    val pl = PlaylistInfo.getInfo(svc, q)
+                    pl.relatedItems.filterIsInstance<StreamInfoItem>().map { it.toItem() }
+                }
+                else -> throw IllegalStateException("Paste a video or playlist link")
             }
+        } else {
+            val handler = svc.searchQHFactory.fromQuery(q, listOf(YoutubeSearchQueryHandlerFactory.VIDEOS), "")
+            val info = SearchInfo.getInfo(svc, handler)
+            info.relatedItems.filterIsInstance<StreamInfoItem>().map { it.toItem() }
         }
-        val audioForMux = if (aM4a > 0) aM4a else aBest
-        val heights = (anyV.keys + muxed.keys).toSet().sortedDescending()
-        val sizes = heights.map { h ->
-            val v = avc[h] ?: anyV[h]
-            val total = if (v == null) (muxed[h] ?: 0L) else if (v > 0) v + audioForMux else 0L
-            h to total
-        }
-        FormatInfo(dur.toLong(), sizes, aBest, aM4a, aOpus)
+    }
+
+    suspend fun streamInfo(url: String): StreamInfo = withContext(Dispatchers.IO) {
+        if (!ready.value) throw IllegalStateException(status.value)
+        StreamCache.get(url) ?: StreamInfo.getInfo(url).also { StreamCache.put(url, it) }
     }
 
     // ---------- download ----------
 
-    private fun buildRequest(t: DownloadTask, tmp: File, embedArt: Boolean): YoutubeDLRequest {
-        val o = t.options
-        val r = YoutubeDLRequest(t.item.url)
-        r.addOption("--no-playlist")
-        r.addOption("--no-mtime")
-        applyClient(r)
-        r.addOption("--retries", "10")
-        r.addOption("--fragment-retries", "10")
-        r.addOption("-o", tmp.absolutePath + "/%(title).120B.%(ext)s")
+    private fun sanitize(s: String): String =
+        s.replace(Regex("[\\\\/:*?\"<>|\\p{Cntrl}]"), "_").trim().take(110).ifBlank { "video" }
 
-        // multi-threading
-        val n = o.threads.coerceIn(1, 16)
-        if (o.useAria2c) {
-            r.addOption("--downloader", "libaria2c.so")
-            r.addOption("--external-downloader-args", "aria2c:-x $n -s $n -k 1M --summary-interval=1")
-        } else {
-            r.addOption("-N", n.toString())
-        }
+    private fun httpBytes(url: String): ByteArray? = try {
+        val req = okhttp3.Request.Builder().url(url).header("User-Agent", Http.UA).build()
+        Http.client.newCall(req).execute().use { r -> if (r.isSuccessful) r.body?.bytes() else null }
+    } catch (e: Exception) {
+        null
+    }
 
-        if (o.mode == Mode.VIDEO) {
-            val h = o.videoHeight
-            val f = if (h > 0) "bv*[height<=$h]+ba/b[height<=$h]/bv*+ba/b" else "bv*+ba/b"
-            r.addOption("-f", f)
-            r.addOption("-S", "res,vcodec:h264,acodec:m4a")
-            r.addOption("--merge-output-format", "mp4/mkv")
-        } else {
-            r.addOption("-f", "ba/b")
-            r.addOption("-x")
-            r.addOption("--audio-format", o.audioFormat)
-            r.addOption("--audio-quality", if (o.audioBitrate == "Best") "0" else o.audioBitrate)
-        }
-
-        r.addOption("--embed-metadata")
-        if (embedArt) {
-            r.addOption("--embed-thumbnail")
-            if (o.mode == Mode.AUDIO && o.squareCover) {
-                r.addOption("--convert-thumbnails", "png")
-                r.addOption(
-                    "--ppa",
-                    "ThumbnailsConvertor+ffmpeg_o:-c:v png -vf crop=\"'if(gt(ih,iw),iw,ih)':'if(gt(iw,ih),ih,iw)'\""
-                )
-            } else {
-                r.addOption("--convert-thumbnails", "jpg")
+    /** Best thumbnail as JPEG bytes (optionally cropped to a square). */
+    private fun fetchCover(info: StreamInfo, square: Boolean): ByteArray? {
+        val urls = ArrayList<String>()
+        info.thumbnails.sortedByDescending { it.height }.forEach { urls.add(it.url) }
+        urls.add("https://i.ytimg.com/vi/${info.id}/maxresdefault.jpg")
+        urls.add("https://i.ytimg.com/vi/${info.id}/hqdefault.jpg")
+        for (u in urls.distinct().take(5)) {
+            val bytes = httpBytes(u) ?: continue
+            var bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: continue
+            if (square) {
+                val side = minOf(bmp.width, bmp.height)
+                bmp = Bitmap.createBitmap(bmp, (bmp.width - side) / 2, (bmp.height - side) / 2, side, side)
             }
+            val out = ByteArrayOutputStream()
+            bmp.compress(Bitmap.CompressFormat.JPEG, 92, out)
+            return out.toByteArray()
         }
-        return r
+        return null
     }
 
-    private fun applyClient(r: YoutubeDLRequest) {
-        val c = Prefs.ytClient
-        if (c != "auto") r.addOption("--extractor-args", "youtube:player_client=$c")
+    private class Progress(val onProgress: (Float, Long) -> Unit) {
+        val done = AtomicLong(0)
+        @Volatile var total = 1L
+        private val started = System.currentTimeMillis()
+
+        fun add(n: Long) {
+            val d = done.addAndGet(n).coerceAtLeast(0)
+            val frac = (d.toFloat() / total.coerceAtLeast(1)).coerceIn(0f, 1f) * 0.92f
+            val secs = (System.currentTimeMillis() - started) / 1000.0
+            val eta = if (secs > 2 && d > 0) ((total - d) / (d / secs)).toLong().coerceAtLeast(0) else 0L
+            onProgress(frac, eta)
+        }
     }
 
-    private fun exec(r: YoutubeDLRequest, id: String, onProgress: (Float, Long) -> Unit) {
-        YoutubeDL.getInstance().execute(r, id) { p, eta, _ -> onProgress(p, eta) }
+    private fun fetchFile(url: String, expected: Long, dest: File, threads: Int, token: CancelToken, p: Progress): Long {
+        val len = if (expected > 0) expected else ChunkDownloader.probeLength(url)
+        ChunkDownloader.download(url, len, dest, threads, token) { p.add(it) }
+        return len
     }
 
-    /** Blocking. Returns a human message. Throws on failure/cancel. */
+    /** Blocking. Returns a message for the queue. Throws on failure or cancel. */
     fun download(
         ctx: Context,
         t: DownloadTask,
-        isCancelled: () -> Boolean,
+        token: CancelToken,
         onProgress: (Float, Long) -> Unit,
     ): String {
+        val info = StreamCache.get(t.item.url) ?: StreamInfo.getInfo(t.item.url).also { StreamCache.put(t.item.url, it) }
+        val opts = buildOptions(info)
+        val o = t.options
         val tmp = File(ctx.getExternalFilesDir(null) ?: ctx.cacheDir, "tmp/${t.id}")
         tmp.deleteRecursively()
         tmp.mkdirs()
-        var artworkOk = true
         try {
-            try {
-                exec(buildRequest(t, tmp, true), t.id, onProgress)
-            } catch (e: Exception) {
-                val m = e.message.orEmpty()
-                val artFail = m.contains("thumbnail", true) || m.contains("mutagen", true)
-                if (isCancelled() || !artFail) throw e
-                artworkOk = false // keep the media, retry without artwork
-                exec(buildRequest(t, tmp, false), t.id, onProgress)
+            val safe = sanitize(info.name ?: t.item.title)
+            val progress = Progress(onProgress)
+            val outFile: File
+            var isWebm = false
+
+            if (o.mode == Mode.AUDIO) {
+                val a = pickAudio(opts, o.audioBitrate) ?: throw IllegalStateException("No audio stream found")
+                val raw = File(tmp, "audio.src")
+                progress.total = a.bytes.coerceAtLeast(1)
+                fetchFile(a.stream.content, a.bytes, raw, o.threads, token, progress)
+                token.check()
+                outFile = File(tmp, "$safe.m4a")
+                Muxer.mux(null, raw, outFile, false, token)
+            } else {
+                val v = pickVideo(opts, o.videoHeight) ?: throw IllegalStateException("No video stream found")
+                isWebm = v.webm
+                val ext = if (v.webm) "webm" else "mp4"
+                outFile = File(tmp, "$safe.$ext")
+                if (v.audio == null) {
+                    // the stream already has sound: just download it
+                    progress.total = v.bytes.coerceAtLeast(1)
+                    fetchFile(v.video.content, v.bytes, outFile, o.threads, token, progress)
+                } else {
+                    val vf = File(tmp, "video.src")
+                    val af = File(tmp, "audio.src")
+                    progress.total = (v.bytes).coerceAtLeast(1)
+                    val vl = fetchFile(v.video.content, streamBytesOf(v.video), vf, o.threads, token, progress)
+                    val al = fetchFile(v.audio.content, streamBytesOf(v.audio), af, o.threads, token, progress)
+                    progress.total = (vl + al).coerceAtLeast(1)
+                    token.check()
+                    Muxer.mux(vf, af, outFile, v.webm, token)
+                }
             }
-            val files = tmp.listFiles()
-                ?.filter { it.isFile && it.extension.lowercase() in MEDIA_EXT }
-                .orEmpty()
-            if (files.isEmpty()) error("No output file was produced")
-            files.forEach { saveToDownloads(ctx, it) }
-            return if (artworkOk) "Saved to Downloads/YTGrab"
-            else "Saved to Downloads/YTGrab (artwork could not be embedded)"
+            onProgress(0.95f, 0)
+            token.check()
+
+            // artwork + tags
+            var artworkOk = false
+            if (!isWebm && (outFile.extension == "mp4" || outFile.extension == "m4a")) {
+                val cover = fetchCover(info, o.mode == Mode.AUDIO && o.squareCover)
+                val artist = (info.uploaderName ?: "").removeSuffix(" - Topic")
+                artworkOk = cover != null && Mp4Tagger.tag(outFile, info.name ?: safe, artist, cover)
+            }
+            token.check()
+            saveToDownloads(ctx, outFile)
+            return when {
+                artworkOk -> "Saved to Downloads/YTGrab (with artwork)"
+                isWebm -> "Saved to Downloads/YTGrab (WebM files can't hold artwork here)"
+                else -> "Saved to Downloads/YTGrab (artwork could not be embedded)"
+            }
         } finally {
             tmp.deleteRecursively()
         }
     }
 
-    fun cancel(id: String) {
-        runCatching { YoutubeDL.getInstance().destroyProcessById(id) }
+    private fun streamBytesOf(s: org.schabi.newpipe.extractor.stream.Stream): Long {
+        val n = s.itagItem?.contentLength ?: return 0L
+        return if (n > 0) n else 0L
     }
 
     private fun mimeFor(ext: String) = when (ext.lowercase()) {
         "mp4" -> "video/mp4"
-        "mkv" -> "video/x-matroska"
         "webm" -> "video/webm"
-        "mov" -> "video/quicktime"
         "m4a" -> "audio/mp4"
-        "mp3" -> "audio/mpeg"
-        "opus", "ogg" -> "audio/ogg"
-        "flac" -> "audio/flac"
-        "aac" -> "audio/aac"
-        "wav" -> "audio/wav"
         else -> "application/octet-stream"
     }
 
@@ -275,7 +236,7 @@ object Engine {
             put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
         val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-            ?: error("Could not create file in Downloads")
+            ?: throw IllegalStateException("Could not create file in Downloads")
         resolver.openOutputStream(uri)!!.use { out -> f.inputStream().use { it.copyTo(out) } }
         values.clear()
         values.put(MediaStore.MediaColumns.IS_PENDING, 0)

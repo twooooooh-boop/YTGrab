@@ -1,31 +1,21 @@
 # YTGrab
 
-Android YouTube video/audio downloader (yt-dlp + ffmpeg + aria2c via youtubedl-android).
+Android YouTube video/audio downloader built on the NewPipe extractor (the same engine NewPipe uses).
 
-- Search by name or paste a link (video or playlist)
-- Video (Best, 2160p ... 144p) or Audio (m4a / mp3 / opus, bitrate choice)
-- Multi-threaded downloads (1-16 threads, optional aria2c) + several downloads in parallel
-- Artwork / metadata embedded in every file
+- Search by name or paste a video / playlist link
+- Tap a result to pick Video or Audio, quality, and see the file size in MB
+- Multi-threaded downloads (1-16 threads) + several downloads in parallel
+- Cover art and title/artist are embedded in the finished mp4 / m4a files
 - Saved to Downloads/YTGrab
+
+Licensed GPL-3.0 because it uses NewPipeExtractor. The proof-of-origin ("PO token") step follows the
+open-source BgUtils / NewPipe approach.
 
 ## Push from Termux
 
 ```sh
-pkg install git unzip -y
-unzip YTGrab.zip && cd YTGrab
-git init -b main
-git add .
-git commit -m "Initial commit"
-git remote add origin https://github.com/twooooooh-boop/YTGrab.git
-git push -u origin main
+cd ~/YTGrab
+git add -A && git commit -m "Update" && git push
 ```
 
-Create the empty repo `YTGrab` on github.com/twooooooh-boop first (no README).
-Use a Personal Access Token (classic, `repo` + `workflow` scopes) as the password.
-
-## Build
-
 Every push builds automatically and publishes a Release (build-N) with one APK: `YTGrab-build-N.apk`.
-
-The workflow installs Gradle itself, so no gradle wrapper is needed.
-To add one for Android Studio: run `gradle wrapper --gradle-version 8.10.2` and commit the result.

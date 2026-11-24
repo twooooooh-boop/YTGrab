@@ -4,8 +4,6 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-val ytdlVersion = "0.18.1"
-
 android {
     namespace = "com.ytgrab.app"
     compileSdk = 35
@@ -14,9 +12,8 @@ android {
         applicationId = "com.ytgrab.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
-        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
+        versionCode = 2
+        versionName = "2.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -30,14 +27,21 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        isCoreLibraryDesugaringEnabled = true
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
 
     packaging {
-        // yt-dlp / python / ffmpeg / aria2c ship as native libs and must be extracted
-        jniLibs { useLegacyPackaging = true }
-        resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+        resources {
+            excludes += setOf(
+                "/META-INF/{AL2.0,LGPL2.1}",
+                "META-INF/DEPENDENCIES",
+                "META-INF/INDEX.LIST",
+                "META-INF/LICENSE*",
+                "META-INF/NOTICE*",
+            )
+        }
     }
 }
 
@@ -53,11 +57,11 @@ dependencies {
     implementation("androidx.compose.material:material-icons-core")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("io.coil-kt:coil-compose:2.7.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
-    // yt-dlp + ffmpeg + aria2c for Android
-    implementation("io.github.junkfood02.youtubedl-android:library:$ytdlVersion")
-    implementation("io.github.junkfood02.youtubedl-android:ffmpeg:$ytdlVersion")
-    implementation("io.github.junkfood02.youtubedl-android:aria2c:$ytdlVersion")
+    // The same YouTube engine NewPipe uses (GPL-3.0)
+    implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.27.1")
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")

@@ -21,6 +21,7 @@ object DownloadCenter {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val jobs = ConcurrentHashMap<String, Job>()
+    private val tokens = ConcurrentHashMap<String, CancelToken>()
     private val cancelled = ConcurrentHashMap.newKeySet<String>()
     @Volatile private var permits = Semaphore(Prefs.maxParallel.coerceAtLeast(1))
 
@@ -55,42 +56,39 @@ object DownloadCenter {
             update(t.id) { it.copy(state = TaskState.CANCELLED) }
             return
         }
+        val token = CancelToken()
+        tokens[t.id] = token
         update(t.id) { it.copy(state = TaskState.RUNNING, message = "Starting…", progress = 0f) }
         try {
-            val msg = Engine.download(
-                app, t,
-                isCancelled = { t.id in cancelled },
-                onProgress = { p, eta ->
-                    update(t.id) {
-                        it.copy(
-                            progress = (p / 100f).coerceIn(0f, 1f),
-                            etaSec = eta,
-                            message = if (p >= 100f) "Merging / embedding artwork…" else "",
-                        )
-                    }
-                },
-            )
+            val msg = Engine.download(app, t, token) { p, eta ->
+                update(t.id) {
+                    it.copy(
+                        progress = p.coerceIn(0f, 1f),
+                        etaSec = eta,
+                        message = if (p >= 0.94f) "Merging / adding artwork…" else "",
+                    )
+                }
+            }
             update(t.id) { it.copy(state = TaskState.DONE, progress = 1f, message = msg) }
         } catch (e: Throwable) {
-            if (t.id in cancelled) {
+            if (t.id in cancelled || token.cancelled) {
                 update(t.id) { it.copy(state = TaskState.CANCELLED, message = "Cancelled") }
             } else {
-                val m = e.message?.lines()?.lastOrNull { it.isNotBlank() } ?: "Download failed"
+                val m = e.message?.lines()?.firstOrNull { it.isNotBlank() } ?: e.javaClass.simpleName
                 update(t.id) { it.copy(state = TaskState.FAILED, message = m) }
             }
+        } finally {
+            tokens.remove(t.id)
         }
     }
 
     fun cancel(id: String) {
         cancelled.add(id)
+        tokens[id]?.cancelled = true
         val t = tasks.value.firstOrNull { it.id == id } ?: return
-        when (t.state) {
-            TaskState.RUNNING -> scope.launch { Engine.cancel(id) }
-            TaskState.QUEUED -> {
-                jobs[id]?.cancel()
-                update(id) { it.copy(state = TaskState.CANCELLED, message = "Cancelled") }
-            }
-            else -> {}
+        if (t.state == TaskState.QUEUED) {
+            jobs[id]?.cancel()
+            update(id) { it.copy(state = TaskState.CANCELLED, message = "Cancelled") }
         }
     }
 

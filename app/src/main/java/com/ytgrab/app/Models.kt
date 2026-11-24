@@ -15,10 +15,8 @@ data class SearchItem(
 data class DownloadOptions(
     val mode: Mode,
     val videoHeight: Int,        // 0 = best available
-    val audioFormat: String,     // m4a / mp3 / opus
-    val audioBitrate: String,    // Best / 320K / 192K / 128K
+    val audioBitrate: String,    // "Best" or a number in kbps, e.g. "128"
     val threads: Int,
-    val useAria2c: Boolean,
     val squareCover: Boolean,
 )
 
@@ -32,8 +30,21 @@ data class DownloadTask(
     val message: String = "",
 )
 
+class CancelToken {
+    @Volatile var cancelled = false
+    fun check() {
+        if (cancelled) throw java.util.concurrent.CancellationException("cancelled")
+    }
+}
+
 fun fmtDur(s: Long): String = when {
     s <= 0 -> ""
     s >= 3600 -> "%d:%02d:%02d".format(s / 3600, s % 3600 / 60, s % 60)
     else -> "%d:%02d".format(s / 60, s % 60)
+}
+
+fun fmtSize(b: Long): String = when {
+    b <= 0 -> ""
+    b >= 1_000_000_000L -> "%.2f GB".format(b / 1_000_000_000.0)
+    else -> "%.1f MB".format(b / 1_000_000.0)
 }

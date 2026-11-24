@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -40,7 +39,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -61,7 +59,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -76,7 +73,6 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
-import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 const val REPO_URL = "github.com/twooooooh-boop/YTGrab"
@@ -203,6 +199,7 @@ fun <T> ChipRow(options: List<T>, selected: T, label: (T) -> String, onSelect: (
     }
 }
 
+/** Default choices (used by "Download all" and as the starting point of every result panel). */
 @Composable
 fun OptionsCard() {
     Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
@@ -214,16 +211,14 @@ fun OptionsCard() {
 
             if (Prefs.mode == Mode.VIDEO) {
                 ChipRow(
-                    listOf(0, 2160, 1440, 1080, 720, 480, 360, 240, 144), Prefs.videoHeight,
+                    listOf(0, 2160, 1440, 1080, 720, 480, 360), Prefs.videoHeight,
                     { if (it == 0) "Best" else "${it}p" },
                 ) { Prefs.videoHeight = it; Prefs.save() }
             } else {
-                ChipRow(listOf("m4a", "mp3", "opus"), Prefs.audioFormat, { it }) {
-                    Prefs.audioFormat = it; Prefs.save()
-                }
-                ChipRow(listOf("Best", "320K", "192K", "128K"), Prefs.audioBitrate, { it }) {
-                    Prefs.audioBitrate = it; Prefs.save()
-                }
+                ChipRow(
+                    listOf("Best", "256", "128", "48"), Prefs.audioBitrate,
+                    { if (it == "Best") it else "${it}k" },
+                ) { Prefs.audioBitrate = it; Prefs.save() }
             }
 
             Text("Threads: ${Prefs.threads}", style = MaterialTheme.typography.labelLarge)
@@ -244,31 +239,33 @@ fun ResultRow(item: SearchItem) {
     var expanded by rememberSaveable(item.url) { mutableStateOf(false) }
     var mode by rememberSaveable(item.url) { mutableStateOf(Prefs.mode) }
     var height by rememberSaveable(item.url) { mutableStateOf(Prefs.videoHeight) }
-    var aFmt by rememberSaveable(item.url) { mutableStateOf(Prefs.audioFormat) }
     var aBr by rememberSaveable(item.url) { mutableStateOf(Prefs.audioBitrate) }
-    var info by remember(item.url) { mutableStateOf(FormatCache.get(item.url)) }
+    var opts by remember(item.url) { mutableStateOf(StreamCache.get(item.url)?.let { buildOptions(it) }) }
     var loading by remember(item.url) { mutableStateOf(false) }
-    var failed by remember(item.url) { mutableStateOf(false) }
+    var error by remember(item.url) { mutableStateOf<String?>(null) }
 
     LaunchedEffect(expanded) {
-        if (expanded && info == null && !loading) {
+        if (expanded && opts == null && !loading) {
             loading = true
-            failed = false
+            error = null
             try {
-                val i = Engine.formats(item.url)
-                FormatCache.put(item.url, i)
-                info = i
-                if (height != 0 && i.videoSizes.isNotEmpty() && i.videoSizes.none { it.first == height }) {
-                    height = i.videoSizes.firstOrNull { it.first <= height }?.first ?: 0
-                }
+                val o = buildOptions(Engine.streamInfo(item.url))
+                opts = o
+                if (height != 0) height = pickVideo(o, height)?.height ?: 0
+                if (aBr != "Best") aBr = pickAudio(o, aBr)?.kbps?.toString() ?: "Best"
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Throwable) {
-                failed = true
+                error = e.message?.lines()?.firstOrNull { it.isNotBlank() } ?: "Could not load streams"
+            } finally {
+                loading = false
             }
-            loading = false
         }
     }
 
-    val sel = info?.let { if (mode == Mode.VIDEO) it.videoSize(height) else audioSize(it, aFmt, aBr) } ?: 0L
+    val sel = opts?.let {
+        if (mode == Mode.VIDEO) pickVideo(it, height)?.bytes else pickAudio(it, aBr)?.bytes
+    } ?: 0L
 
     Card(Modifier.fillMaxWidth().clickable { expanded = !expanded }) {
         Column {
@@ -306,29 +303,33 @@ fun ResultRow(item: SearchItem) {
                     if (loading) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                            Text("Getting sizes…", style = MaterialTheme.typography.bodySmall)
+                            Text("Getting formats & sizes…", style = MaterialTheme.typography.bodySmall)
                         }
                     }
-                    if (failed) {
-                        Text("Couldn't read sizes, you can still download.", style = MaterialTheme.typography.bodySmall)
+                    error?.let {
+                        Text("Could not load formats: $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                     }
 
+                    val o = opts
                     if (mode == Mode.VIDEO) {
-                        val opts = listOf(0) + (info?.videoSizes?.map { it.first } ?: listOf(2160, 1440, 1080, 720, 480, 360, 240, 144))
+                        val heights = if (o != null) listOf(0) + o.video.map { it.height } else listOf(0, 1080, 720, 480, 360)
                         ChipRow(
-                            opts, height,
+                            heights, height,
                             { h ->
-                                val s = info?.videoSize(h) ?: 0L
-                                (if (h == 0) "Best" else "${h}p") + (if (s > 0) " · ${fmtSize(s)}" else "")
+                                val v = o?.let { pickVideo(it, h) }
+                                val base = if (h == 0) "Best" else "${h}p"
+                                val tag = if (v != null && v.webm) " webm" else ""
+                                base + tag + (if (v != null && v.bytes > 0) " · ${fmtSize(v.bytes)}" else "")
                             },
                         ) { height = it }
                     } else {
-                        ChipRow(listOf("m4a", "mp3", "opus"), aFmt, { it }) { aFmt = it }
+                        val rates = if (o != null) listOf("Best") + o.audio.map { it.kbps.toString() } else listOf("Best", "128", "48")
                         ChipRow(
-                            listOf("Best", "320K", "192K", "128K"), aBr,
+                            rates, aBr,
                             { b ->
-                                val s = info?.let { audioSize(it, aFmt, b) } ?: 0L
-                                b + (if (s > 0) " · ≈${fmtSize(s)}" else "")
+                                val a = o?.let { pickAudio(it, b) }
+                                val base = if (b == "Best") "Best" else "${b}k"
+                                base + (if (a != null && a.bytes > 0) " · ${fmtSize(a.bytes)}" else "")
                             },
                         ) { aBr = it }
                     }
@@ -336,14 +337,14 @@ fun ResultRow(item: SearchItem) {
                     Button(onClick = {
                         DownloadCenter.enqueue(
                             ctx, listOf(item),
-                            Prefs.options().copy(mode = mode, videoHeight = height, audioFormat = aFmt, audioBitrate = aBr),
+                            Prefs.options().copy(mode = mode, videoHeight = height, audioBitrate = aBr),
                         )
                         Toast.makeText(ctx, "Added to queue", Toast.LENGTH_SHORT).show()
                         expanded = false
                     }) {
                         Text(
                             (if (mode == Mode.VIDEO) "Download video" else "Download audio") +
-                                (if (sel > 0) " · ≈ ${fmtSize(sel)}" else "")
+                                (if (sel > 0) " · ${fmtSize(sel)}" else "")
                         )
                     }
                 }
@@ -357,7 +358,7 @@ fun ResultRow(item: SearchItem) {
 private fun optLabel(o: DownloadOptions): String =
     if (o.mode == Mode.VIDEO)
         "Video · " + (if (o.videoHeight == 0) "Best" else "${o.videoHeight}p") + " · ${o.threads} threads"
-    else "Audio · ${o.audioFormat} · ${o.audioBitrate} · ${o.threads} threads"
+    else "Audio · m4a · " + (if (o.audioBitrate == "Best") "Best" else "${o.audioBitrate}k") + " · ${o.threads} threads"
 
 @Composable
 fun QueueScreen(tasks: List<DownloadTask>) {
@@ -372,7 +373,7 @@ fun QueueScreen(tasks: List<DownloadTask>) {
             TextButton(onClick = { DownloadCenter.clearFinished() }) { Text("Clear finished") }
         }
         if (tasks.isEmpty()) {
-            Text("Nothing here yet. Search and tap Download.", Modifier.padding(12.dp))
+            Text("Nothing here yet. Search and tap a result.", Modifier.padding(12.dp))
         }
         LazyColumn(
             contentPadding = PaddingValues(12.dp),
@@ -434,11 +435,7 @@ fun SwitchRow(title: String, subtitle: String, checked: Boolean, onChange: (Bool
 
 @Composable
 fun SettingsScreen() {
-    val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
     val status by Engine.status.collectAsStateWithLifecycle()
-    var updateMsg by remember { mutableStateOf("") }
-    var updating by remember { mutableStateOf(false) }
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
@@ -456,52 +453,22 @@ fun SettingsScreen() {
         }
 
         SwitchRow(
-            "Use aria2c downloader",
-            "Splits each file into N connections (uses the Threads slider). Try it if downloads are slow.",
-            Prefs.useAria2c,
-        ) { Prefs.useAria2c = it; Prefs.save() }
-
-        SwitchRow(
             "Square cover art for audio",
             "Crops the thumbnail to a square before embedding it in audio files.",
             Prefs.squareCover,
         ) { Prefs.squareCover = it; Prefs.save() }
 
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("YouTube client (for 403 errors)", style = MaterialTheme.typography.titleSmall)
-            ChipRow(
-                listOf("auto", "android_vr", "web_embedded", "tv", "mweb", "web_safari"),
-                Prefs.ytClient, { it },
-            ) { Prefs.ytClient = it; Prefs.save() }
-            Text(
-                "Leave on auto first. If a download fails with 403, pick another one and tap Retry in the Queue.",
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("yt-dlp engine", style = MaterialTheme.typography.titleSmall)
+            Text("Engine", style = MaterialTheme.typography.titleSmall)
             Text(status, style = MaterialTheme.typography.bodySmall)
-            Button(
-                enabled = !updating,
-                onClick = {
-                    updating = true
-                    updateMsg = "Updating…"
-                    scope.launch {
-                        updateMsg = Engine.updateYtDlp(ctx)
-                        updating = false
-                    }
-                },
-            ) { Text("Update yt-dlp") }
-            if (updateMsg.isNotEmpty()) Text(updateMsg, style = MaterialTheme.typography.bodySmall)
             Text(
-                "If searches or downloads suddenly start failing, update yt-dlp first.",
+                "Audio is saved as m4a (AAC). Video is saved as mp4 (H.264) and carries the video thumbnail as cover art.",
                 style = MaterialTheme.typography.bodySmall,
             )
         }
 
-        Spacer(Modifier.height(4.dp))
         Text("Files are saved to Downloads/YTGrab", style = MaterialTheme.typography.bodySmall)
         Text(REPO_URL, style = MaterialTheme.typography.bodySmall)
+        Text("Uses the NewPipe extractor (GPL-3.0).", style = MaterialTheme.typography.bodySmall)
     }
 }
