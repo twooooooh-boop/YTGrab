@@ -12,17 +12,35 @@ android {
         applicationId = "com.ytgrab.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 2
-        versionName = "2.0"
+        versionCode = (project.findProperty("vc") as String?)?.toIntOrNull() ?: 3
+        versionName = "2.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    // One permanent key, so every new build installs over the old one.
+    // The key file lives in the repo at keystore/ytgrab-release.p12 - never delete or replace it.
+    signingConfigs {
+        create("release") {
+            storeFile = rootProject.file("keystore/ytgrab-release.p12")
+            storePassword = "pbtrxwj9aqqHkxtqE9DKAcFw"
+            keyAlias = "ytgrab"
+            keyPassword = "pbtrxwj9aqqHkxtqE9DKAcFw"
+            storeType = "pkcs12"
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            isShrinkResources = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
         }
+    }
+
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

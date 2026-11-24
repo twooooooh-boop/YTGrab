@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.net.ConnectivityManager
 import android.os.Environment
 import android.provider.MediaStore
 import kotlinx.coroutines.CoroutineScope
@@ -107,7 +108,7 @@ object Engine {
     }
 
     /** Best thumbnail as JPEG bytes (optionally cropped to a square). */
-    private fun fetchCover(info: StreamInfo, square: Boolean): ByteArray? {
+    private fun fetchCover(info: StreamInfo, square: Boolean, quality: Int): ByteArray? {
         val urls = ArrayList<String>()
         info.thumbnails.sortedByDescending { it.height }.forEach { urls.add(it.url) }
         urls.add("https://i.ytimg.com/vi/${info.id}/maxresdefault.jpg")
@@ -120,7 +121,7 @@ object Engine {
                 bmp = Bitmap.createBitmap(bmp, (bmp.width - side) / 2, (bmp.height - side) / 2, side, side)
             }
             val out = ByteArrayOutputStream()
-            bmp.compress(Bitmap.CompressFormat.JPEG, 92, out)
+            bmp.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(50, 100), out)
             return out.toByteArray()
         }
         return null
@@ -142,8 +143,23 @@ object Engine {
 
     private fun fetchFile(url: String, expected: Long, dest: File, threads: Int, token: CancelToken, p: Progress): Long {
         val len = if (expected > 0) expected else ChunkDownloader.probeLength(url)
-        ChunkDownloader.download(url, len, dest, threads, token) { p.add(it) }
+        ChunkDownloader.download(url, len, dest, threads, token, Prefs.chunkMb * 1024L * 1024L) { p.add(it) }
         return len
+    }
+
+    private fun streamBytesOf(s: org.schabi.newpipe.extractor.stream.Stream): Long {
+        val n = s.itagItem?.contentLength ?: return 0L
+        return if (n > 0) n else 0L
+    }
+
+    private fun fileNameFor(info: StreamInfo, safeTitle: String, qualityTag: String): String {
+        val artist = (info.uploaderName ?: "").removeSuffix(" - Topic")
+        val title = info.name ?: safeTitle
+        return when (Prefs.nameTemplate) {
+            "artist_title" -> if (artist.isBlank()) safeTitle else sanitize("$artist - $title")
+            "title_quality" -> sanitize("$title [$qualityTag]")
+            else -> safeTitle
+        }
     }
 
     /** Blocking. Returns a message for the queue. Throws on failure or cancel. */
@@ -153,9 +169,16 @@ object Engine {
         token: CancelToken,
         onProgress: (Float, Long) -> Unit,
     ): String {
+        if (Prefs.wifiOnly) {
+            val cm = ctx.getSystemService(ConnectivityManager::class.java)
+            if (cm != null && cm.isActiveNetworkMetered) {
+                throw IllegalStateException("Wi-Fi only is on, but you're on mobile data")
+            }
+        }
         val info = StreamCache.get(t.item.url) ?: StreamInfo.getInfo(t.item.url).also { StreamCache.put(t.item.url, it) }
         val opts = buildOptions(info)
         val o = t.options
+        val folder = Prefs.cleanFolder(Prefs.folder).trim().ifBlank { "YTGrab" }
         val tmp = File(ctx.getExternalFilesDir(null) ?: ctx.cacheDir, "tmp/${t.id}")
         tmp.deleteRecursively()
         tmp.mkdirs()
@@ -171,21 +194,20 @@ object Engine {
                 progress.total = a.bytes.coerceAtLeast(1)
                 fetchFile(a.stream.content, a.bytes, raw, o.threads, token, progress)
                 token.check()
-                outFile = File(tmp, "$safe.m4a")
+                outFile = File(tmp, fileNameFor(info, safe, "${a.kbps}k") + ".m4a")
                 Muxer.mux(null, raw, outFile, false, token)
             } else {
                 val v = pickVideo(opts, o.videoHeight) ?: throw IllegalStateException("No video stream found")
                 isWebm = v.webm
                 val ext = if (v.webm) "webm" else "mp4"
-                outFile = File(tmp, "$safe.$ext")
+                outFile = File(tmp, fileNameFor(info, safe, "${v.height}p") + "." + ext)
                 if (v.audio == null) {
-                    // the stream already has sound: just download it
                     progress.total = v.bytes.coerceAtLeast(1)
                     fetchFile(v.video.content, v.bytes, outFile, o.threads, token, progress)
                 } else {
                     val vf = File(tmp, "video.src")
                     val af = File(tmp, "audio.src")
-                    progress.total = (v.bytes).coerceAtLeast(1)
+                    progress.total = v.bytes.coerceAtLeast(1)
                     val vl = fetchFile(v.video.content, streamBytesOf(v.video), vf, o.threads, token, progress)
                     val al = fetchFile(v.audio.content, streamBytesOf(v.audio), af, o.threads, token, progress)
                     progress.total = (vl + al).coerceAtLeast(1)
@@ -196,28 +218,36 @@ object Engine {
             onProgress(0.95f, 0)
             token.check()
 
-            // artwork + tags
+            // artwork + tags (each can be switched off in Settings)
+            val wantArt = if (o.mode == Mode.AUDIO) Prefs.artAudio else Prefs.artVideo
+            val wantTags = Prefs.embedTags
             var artworkOk = false
-            if (!isWebm && (outFile.extension == "mp4" || outFile.extension == "m4a")) {
-                val cover = fetchCover(info, o.mode == Mode.AUDIO && o.squareCover)
+            if (!isWebm && (outFile.extension == "mp4" || outFile.extension == "m4a") && (wantArt || wantTags)) {
+                val cover = if (wantArt) fetchCover(info, o.mode == Mode.AUDIO && Prefs.squareCover, Prefs.coverQuality) else null
                 val artist = (info.uploaderName ?: "").removeSuffix(" - Topic")
-                artworkOk = cover != null && Mp4Tagger.tag(outFile, info.name ?: safe, artist, cover)
+                val ok = Mp4Tagger.tag(
+                    outFile,
+                    if (wantTags) (info.name ?: safe) else "",
+                    if (wantTags) artist else "",
+                    cover,
+                )
+                artworkOk = ok && cover != null
             }
             token.check()
-            saveToDownloads(ctx, outFile)
+            saveToDownloads(ctx, outFile, folder)
             return when {
-                artworkOk -> "Saved to Downloads/YTGrab (with artwork)"
-                isWebm -> "Saved to Downloads/YTGrab (WebM files can't hold artwork here)"
-                else -> "Saved to Downloads/YTGrab (artwork could not be embedded)"
+                artworkOk -> "Saved to Downloads/$folder (with artwork)"
+                !wantArt -> "Saved to Downloads/$folder"
+                isWebm -> "Saved to Downloads/$folder (WebM can't hold artwork here)"
+                else -> "Saved to Downloads/$folder (artwork could not be embedded)"
             }
         } finally {
             tmp.deleteRecursively()
         }
     }
 
-    private fun streamBytesOf(s: org.schabi.newpipe.extractor.stream.Stream): Long {
-        val n = s.itagItem?.contentLength ?: return 0L
-        return if (n > 0) n else 0L
+    fun clearTemp(ctx: Context) {
+        File(ctx.getExternalFilesDir(null) ?: ctx.cacheDir, "tmp").deleteRecursively()
     }
 
     private fun mimeFor(ext: String) = when (ext.lowercase()) {
@@ -227,12 +257,12 @@ object Engine {
         else -> "application/octet-stream"
     }
 
-    private fun saveToDownloads(ctx: Context, f: File) {
+    private fun saveToDownloads(ctx: Context, f: File, folder: String) {
         val resolver = ctx.contentResolver
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, f.name)
             put(MediaStore.MediaColumns.MIME_TYPE, mimeFor(f.extension))
-            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/YTGrab")
+            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/" + folder)
             put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
         val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)

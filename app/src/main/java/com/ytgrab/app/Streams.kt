@@ -23,6 +23,7 @@ object StreamCache {
     private val map = ConcurrentHashMap<String, StreamInfo>()
     fun get(url: String): StreamInfo? = map[url]
     fun put(url: String, info: StreamInfo) { map[url] = info }
+    fun clear() { map.clear() }
 }
 
 private fun streamBytes(s: Stream?): Long {
@@ -66,14 +67,39 @@ fun buildOptions(info: StreamInfo): StreamOptions {
     return StreamOptions(info, videoOpts, audioOpts)
 }
 
-fun pickVideo(o: StreamOptions, height: Int): VideoOpt? {
+/** Exact quality if it exists. Otherwise Best (default) or the closest lower one. Never fails when any stream exists. */
+fun pickVideo(o: StreamOptions, height: Int, fallbackBest: Boolean = Prefs.fallbackBest): VideoOpt? {
     if (o.video.isEmpty()) return null
     if (height == 0) return o.video.first()
-    return o.video.firstOrNull { it.height <= height } ?: o.video.last()
+    o.video.firstOrNull { it.height == height }?.let { return it }
+    return if (fallbackBest) o.video.first() else (o.video.firstOrNull { it.height <= height } ?: o.video.first())
 }
 
-fun pickAudio(o: StreamOptions, bitrate: String): AudioOpt? {
+fun pickAudio(o: StreamOptions, bitrate: String, fallbackBest: Boolean = Prefs.fallbackBest): AudioOpt? {
     if (o.audio.isEmpty()) return null
     val target = bitrate.toIntOrNull() ?: return o.audio.first()
-    return o.audio.firstOrNull { it.kbps <= target } ?: o.audio.last()
+    o.audio.firstOrNull { it.kbps == target }?.let { return it }
+    return if (fallbackBest) o.audio.first() else (o.audio.firstOrNull { it.kbps <= target } ?: o.audio.first())
 }
+
+fun videoChoices(o: StreamOptions?): List<QOpt> {
+    if (o == null || o.video.isEmpty()) return emptyList()
+    val best = o.video.first()
+    val list = ArrayList<QOpt>()
+    list += QOpt("0", "Best", "${best.height}p · " + sizeText(best.bytes))
+    for (v in o.video) {
+        list += QOpt(v.height.toString(), "${v.height}p" + (if (v.webm) " · WebM (no artwork)" else ""), sizeText(v.bytes))
+    }
+    return list
+}
+
+fun audioChoices(o: StreamOptions?): List<QOpt> {
+    if (o == null || o.audio.isEmpty()) return emptyList()
+    val best = o.audio.first()
+    val list = ArrayList<QOpt>()
+    list += QOpt("Best", "Best", "${best.kbps} kbps · " + sizeText(best.bytes))
+    for (a in o.audio) list += QOpt(a.kbps.toString(), "${a.kbps} kbps · m4a", sizeText(a.bytes))
+    return list
+}
+
+private fun sizeText(b: Long) = if (b > 0) fmtSize(b) else "size unknown"

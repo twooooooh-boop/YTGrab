@@ -30,10 +30,10 @@ jobs:
         with:
           gradle-version: '8.10.2'
 
-      - name: Build debug APK
+      - name: Build release APK
         shell: bash
         run: |
-          gradle assembleDebug --stacktrace 2>&1 | tee build.log
+          gradle assembleRelease -Pvc=${{ github.run_number }} --stacktrace 2>&1 | tee build.log
           exit ${PIPESTATUS[0]}
 
       - name: Put errors in the run summary
@@ -55,12 +55,34 @@ jobs:
 
       - name: Rename APK
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk YTGrab-build-${{ github.run_number }}.apk
+          cp app/build/outputs/apk/release/app-release.apk YTGrab-build-${{ github.run_number }}.apk
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
           name: build-${{ github.run_number }}
-          body: Automatic debug build from commit ${{ github.sha }}
+          body: Automatic release build from commit ${{ github.sha }}
           files: YTGrab-build-${{ github.run_number }}.apk
+
+      - name: Notify success
+        if: success()
+        run: |
+          curl -s \
+            -H "Title: YTGrab build ${{ github.run_number }} succeeded" \
+            -H "Tags: white_check_mark" \
+            -H "Click: https://github.com/${{ github.repository }}/releases/latest" \
+            -d "The release is ready to install." \
+            https://ntfy.sh/ytgrab-b52b7c7c0142
+
+      - name: Notify failure
+        if: failure()
+        run: |
+          ERR=$(grep -E "^e: |What went wrong|Could not resolve|Execution failed|keystore" -A3 build.log 2>/dev/null | head -8 | cut -c1-200)
+          curl -s \
+            -H "Title: YTGrab build ${{ github.run_number }} FAILED" \
+            -H "Priority: high" \
+            -H "Tags: x" \
+            -H "Click: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            -d "${ERR:-Open the run to see what went wrong.}" \
+            https://ntfy.sh/ytgrab-b52b7c7c0142

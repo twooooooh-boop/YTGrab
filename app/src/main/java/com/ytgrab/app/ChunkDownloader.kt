@@ -15,8 +15,6 @@ import java.util.concurrent.atomic.AtomicReference
 
 /** Downloads one file with several parallel range requests. */
 object ChunkDownloader {
-    private const val CHUNK = 4L * 1024 * 1024
-
     fun probeLength(url: String): Long {
         val req = Request.Builder().url(url).header("Range", "bytes=0-0").header("User-Agent", Http.UA).build()
         Http.client.newCall(req).execute().use { r ->
@@ -35,12 +33,13 @@ object ChunkDownloader {
         dest: File,
         threads: Int,
         token: CancelToken,
+        chunk: Long,
         onBytes: (Long) -> Unit,
     ) {
         val raf = RandomAccessFile(dest, "rw")
         raf.setLength(total)
         val channel = raf.channel
-        val chunks = ((total + CHUNK - 1) / CHUNK).toInt()
+        val chunks = ((total + chunk - 1) / chunk).toInt()
         val next = AtomicInteger(0)
         val stop = AtomicBoolean(false)
         val firstError = AtomicReference<Throwable?>(null)
@@ -55,8 +54,8 @@ object ChunkDownloader {
                             if (stop.get()) return@Runnable
                             val i = next.getAndIncrement()
                             if (i >= chunks) return@Runnable
-                            val start = i * CHUNK
-                            val end = minOf(total - 1, start + CHUNK - 1)
+                            val start = i.toLong() * chunk
+                            val end = minOf(total - 1, start + chunk - 1)
                             var attempt = 0
                             while (true) {
                                 token.check()

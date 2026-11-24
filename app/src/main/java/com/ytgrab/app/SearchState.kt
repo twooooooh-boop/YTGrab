@@ -20,6 +20,7 @@ object SearchState {
     fun search() {
         val q = query.trim()
         if (q.isEmpty() || loading) return
+        Prefs.addHistory(q)
         loading = true
         error = null
         scope.launch {

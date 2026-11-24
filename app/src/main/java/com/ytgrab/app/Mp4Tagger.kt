@@ -36,8 +36,12 @@ object Mp4Tagger {
     private fun buildUdta(title: String, artist: String, coverJpeg: ByteArray?): ByteArray {
         val items = ByteArrayOutputStream()
         val c = 0xA9.toByte()
-        items.write(textItem(byteArrayOf(c, 'n'.code.toByte(), 'a'.code.toByte(), 'm'.code.toByte()), title))
-        items.write(textItem(byteArrayOf(c, 'A'.code.toByte(), 'R'.code.toByte(), 'T'.code.toByte()), artist))
+        if (title.isNotBlank()) {
+            items.write(textItem(byteArrayOf(c, 'n'.code.toByte(), 'a'.code.toByte(), 'm'.code.toByte()), title))
+        }
+        if (artist.isNotBlank()) {
+            items.write(textItem(byteArrayOf(c, 'A'.code.toByte(), 'R'.code.toByte(), 'T'.code.toByte()), artist))
+        }
         if (coverJpeg != null) items.write(box("covr", dataBox(13, coverJpeg)))
         val ilst = box("ilst", items.toByteArray())
 

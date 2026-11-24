@@ -17,7 +17,6 @@ data class DownloadOptions(
     val videoHeight: Int,        // 0 = best available
     val audioBitrate: String,    // "Best" or a number in kbps, e.g. "128"
     val threads: Int,
-    val squareCover: Boolean,
 )
 
 data class DownloadTask(
@@ -42,6 +41,8 @@ fun fmtDur(s: Long): String = when {
     s >= 3600 -> "%d:%02d:%02d".format(s / 3600, s % 3600 / 60, s % 60)
     else -> "%d:%02d".format(s / 60, s % 60)
 }
+
+data class QOpt(val key: String, val title: String, val sub: String)
 
 fun fmtSize(b: Long): String = when {
     b <= 0 -> ""
