@@ -1,11 +1,13 @@
 package com.ytgrab.app
 
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.schabi.newpipe.extractor.downloader.Downloader
 import org.schabi.newpipe.extractor.downloader.Request
 import org.schabi.newpipe.extractor.downloader.Response
 import org.schabi.newpipe.extractor.exceptions.ReCaptchaException
+import org.schabi.newpipe.extractor.localization.Localization
 import java.util.concurrent.TimeUnit
 
 object Http {
@@ -35,6 +37,52 @@ class NpDownloader : Downloader() {
             if (resp.code == 429) throw ReCaptchaException("reCaptcha Challenge requested", request.url())
             val text = resp.body?.string()
             return Response(resp.code, resp.message, resp.headers.toMultimap(), text, resp.request.url.toString())
+        }
+    }
+}
+
+/**
+ * YouTube stream links are bound to the app that asked for them (the "c=" part of the link).
+ * googlevideo answers 403 unless the download uses that same app's User-Agent.
+ * The exact strings come from the NewPipe extractor itself, so they always match its version.
+ */
+object StreamUa {
+    private val cache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    fun clientOf(url: String): String = url.toHttpUrlOrNull()?.queryParameter("c")?.uppercase() ?: "?"
+
+    private fun matches(client: String, n: String) = when (client) {
+        "VISIONOS" -> n.contains("visionos")
+        "IOS" -> n.contains("ios") && !n.contains("visionos")
+        "ANDROID" -> n.contains("android") && !n.contains("vr")
+        "ANDROID_VR" -> n.contains("android") && n.contains("vr")
+        else -> false
+    }
+
+    private fun fromExtractor(client: String): String? {
+        cache[client]?.let { return it }
+        return try {
+            val cls = Class.forName("org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper")
+            val m = cls.methods.firstOrNull { m ->
+                java.lang.reflect.Modifier.isStatic(m.modifiers) &&
+                    m.returnType == String::class.java &&
+                    m.parameterTypes.size == 1 &&
+                    m.parameterTypes[0] == Localization::class.java &&
+                    m.name.contains("UserAgent", ignoreCase = true) &&
+                    matches(client, m.name.lowercase())
+            } ?: return null
+            (m.invoke(null, Localization.DEFAULT) as? String)?.also { cache[client] = it }
+        } catch (e: Throwable) {
+            null
+        }
+    }
+
+    fun forUrl(url: String): String {
+        val c = clientOf(url)
+        return fromExtractor(c) ?: when (c) {
+            "IOS" -> "com.google.ios.youtube/20.03.02 (iPhone16,2; U; CPU iOS 18_2_1 like Mac OS X;)"
+            "ANDROID" -> "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip"
+            else -> Http.UA
         }
     }
 }

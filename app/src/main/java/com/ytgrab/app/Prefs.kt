@@ -141,6 +141,11 @@ object Prefs {
         save()
     }
 
+    fun removeHistory(q: String) {
+        history = history.filterNot { it == q }
+        save()
+    }
+
     fun clearHistory() {
         history = emptyList()
         save()

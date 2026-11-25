@@ -13,7 +13,7 @@ android {
         minSdk = 29
         targetSdk = 35
         versionCode = (project.findProperty("vc") as String?)?.toIntOrNull() ?: 3
-        versionName = "2.2"
+        versionName = "2.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

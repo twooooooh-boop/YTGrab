@@ -94,6 +94,12 @@ object Engine {
         }
     }
 
+    /** Live YouTube search suggestions (the same ones youtube.com shows while you type). */
+    fun suggest(query: String): List<String> {
+        if (!ready.value) return emptyList()
+        return ServiceList.YouTube.suggestionExtractor.suggestionList(query).take(10)
+    }
+
     suspend fun streamInfo(url: String): StreamInfo = withContext(Dispatchers.IO) {
         if (!ready.value) throw IllegalStateException(status.value)
         StreamCache.get(url) ?: StreamInfo.getInfo(url).also { StreamCache.put(url, it) }

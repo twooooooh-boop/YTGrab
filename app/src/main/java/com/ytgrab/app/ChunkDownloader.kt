@@ -27,9 +27,11 @@ object ChunkDownloader {
 
     /** Real size of the file on the server (asks for 1 byte). */
     fun probeLength(url: String): Long {
-        val req = Request.Builder().url(url).header("Range", "bytes=0-0").header("User-Agent", Http.UA).build()
+        val req = Request.Builder().url(url).header("Range", "bytes=0-0").header("User-Agent", StreamUa.forUrl(url)).build()
         Http.client.newCall(req).execute().use { r ->
-            if (r.code != 206 && r.code != 200) throw IOException("HTTP ${r.code} while checking the file size")
+            if (r.code != 206 && r.code != 200) {
+                throw IOException("HTTP ${r.code} while checking the file size (YouTube client ${StreamUa.clientOf(url)})")
+            }
             val ct = r.header("Content-Type").orEmpty()
             if (looksLikeNotMedia(ct)) throw IOException("Server sent \"$ct\" instead of media")
             val total = r.header("Content-Range")?.substringAfter('/')?.trim()?.toLongOrNull()
@@ -130,10 +132,10 @@ object ChunkDownloader {
     ) {
         val req = Request.Builder().url(url)
             .header("Range", "bytes=$start-$end")
-            .header("User-Agent", Http.UA)
+            .header("User-Agent", StreamUa.forUrl(url))
             .build()
         Http.client.newCall(req).execute().use { r ->
-            if (r.code != 206) throw IOException("HTTP ${r.code}")
+            if (r.code != 206) throw IOException("HTTP ${r.code} (YouTube client ${StreamUa.clientOf(url)})")
             val ct = r.header("Content-Type").orEmpty()
             if (looksLikeNotMedia(ct)) throw IOException("Server sent \"$ct\" instead of media (HTTP ${r.code})")
             val body = r.body ?: throw IOException("Empty response")

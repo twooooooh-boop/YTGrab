@@ -52,6 +52,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -68,11 +69,70 @@ private fun defaultsLabel(): String =
     else "audio · " + (if (Prefs.audioBitrate == "Best") "Best" else "${Prefs.audioBitrate} kbps")
 
 @Composable
+private fun SuggestionRow(icon: String, text: String, onFill: () -> Unit, onRemove: (() -> Unit)?, onPick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onPick).padding(start = 20.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(icon, Modifier.width(34.dp))
+        Text(
+            text, Modifier.weight(1f).padding(vertical = 12.dp),
+            maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge,
+        )
+        if (onRemove != null) {
+            IconButton(onClick = onRemove) { Icon(Icons.Default.Close, "Remove") }
+        }
+        IconButton(onClick = onFill) { Text("↖", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+    }
+}
+
+/** Shown while the search box is focused: your recent searches when it is empty, YouTube's suggestions while typing. */
+@Composable
+private fun SuggestionPanel(onPick: () -> Unit) {
+    val q = SearchState.query.trim()
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
+        if (q.isEmpty()) {
+            if (Prefs.saveHistory && Prefs.history.isNotEmpty()) {
+                item {
+                    Row(
+                        Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("Recent searches", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                        TextButton(onClick = { Prefs.clearHistory() }) { Text("Clear all") }
+                    }
+                }
+                items(Prefs.history) { h ->
+                    SuggestionRow(
+                        "🕘", h,
+                        onFill = { SearchState.onQueryChanged(h) },
+                        onRemove = { Prefs.removeHistory(h) },
+                    ) { SearchState.onQueryChanged(h); onPick() }
+                }
+            } else {
+                item { EmptyState("⌨️", "Start typing", "YouTube suggestions will show up here as you type.") }
+            }
+        } else {
+            item {
+                SuggestionRow("🔍", q, onFill = {}, onRemove = null) { onPick() }
+            }
+            items(SearchState.suggestions.filterNot { it.equals(q, ignoreCase = true) }) { s ->
+                SuggestionRow("🔍", s, onFill = { SearchState.onQueryChanged(s) }, onRemove = null) {
+                    SearchState.onQueryChanged(s); onPick()
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun SearchScreen() {
     val ctx = LocalContext.current
     val focus = LocalFocusManager.current
     val ready by Engine.ready.collectAsStateWithLifecycle()
     val status by Engine.status.collectAsStateWithLifecycle()
+    var focused by remember { mutableStateOf(false) }
     val go = { focus.clearFocus(); SearchState.search() }
 
     Column(Modifier.fillMaxSize()) {
@@ -80,15 +140,15 @@ fun SearchScreen() {
 
         OutlinedTextField(
             value = SearchState.query,
-            onValueChange = { SearchState.query = it },
+            onValueChange = { SearchState.onQueryChanged(it) },
             placeholder = { Text("Song, video, or link") },
             singleLine = true,
             shape = RoundedCornerShape(28.dp),
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).onFocusChanged { focused = it.isFocused },
             leadingIcon = { Icon(Icons.Default.Search, null) },
             trailingIcon = {
                 if (SearchState.query.isNotEmpty()) {
-                    IconButton(onClick = { SearchState.query = "" }) { Icon(Icons.Default.Close, "Clear") }
+                    IconButton(onClick = { SearchState.onQueryChanged("") }) { Icon(Icons.Default.Close, "Clear") }
                 }
             },
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
@@ -107,6 +167,7 @@ fun SearchScreen() {
 
         val results = SearchState.results
         when {
+            focused -> SuggestionPanel { go() }
             SearchState.loading -> Box(Modifier.fillMaxWidth().padding(40.dp), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             }
@@ -140,21 +201,6 @@ fun SearchScreen() {
                         Modifier.padding(16.dp),
                         color = MaterialTheme.colorScheme.onErrorContainer,
                     )
-                }
-            }
-            Prefs.saveHistory && Prefs.history.isNotEmpty() && SearchState.query.isBlank() -> {
-                Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Text("Recent searches", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-                        TextButton(onClick = { Prefs.clearHistory() }) { Text("Clear") }
-                    }
-                    Prefs.history.forEach { q ->
-                        Text(
-                            "🕘   $q",
-                            Modifier.fillMaxWidth().clickable { SearchState.query = q; go() }.padding(vertical = 12.dp),
-                            maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        )
-                    }
                 }
             }
             else -> EmptyState("🔎", "Find something to download", "Type a name, or paste a video or playlist link, then tap a result to choose video or audio and a quality.")
