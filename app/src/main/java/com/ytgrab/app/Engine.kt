@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.ConnectivityManager
+import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import kotlinx.coroutines.CoroutineScope
@@ -12,6 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.schabi.newpipe.extractor.NewPipe
 import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.StreamingService
@@ -191,7 +193,7 @@ object Engine {
     }
 
     /** Joins the streams and refuses to continue when the result is empty or broken. */
-    private fun muxChecked(video: File?, audio: File?, out: File, webm: Boolean, token: CancelToken, srcBytes: Long) {
+    private fun muxChecked(video: File?, audio: File?, out: File, webm: Boolean, token: CancelToken, minBytes: Long) {
         try {
             Muxer.mux(video, audio, out, webm, token)
         } catch (e: java.util.concurrent.CancellationException) {
@@ -203,13 +205,20 @@ object Engine {
                     "Source ${src.length()} bytes, starts with ${headHex(src)}"
             )
         }
-        val minOk = maxOf(20_000L, srcBytes / 2)
+        val minOk = maxOf(20_000L, minBytes)
         if (out.length() < minOk) {
-            throw BadMediaException("The result is only ${out.length()} bytes (source ${fmtSize(srcBytes)}), so it was not saved")
+            throw BadMediaException("The result is only ${out.length()} bytes (expected at least ${fmtSize(minOk)}), so it was not saved")
         }
     }
 
-    /** Blocking. Returns a message for the queue. Throws on failure or cancel. Tries twice with fresh data. */
+    private fun describe(s: org.schabi.newpipe.extractor.stream.Stream): String {
+        val host = s.content.toHttpUrlOrNull()?.host ?: "?"
+        val itag = s.content.toHttpUrlOrNull()?.queryParameter("itag") ?: "?"
+        return "client=${StreamUa.clientOf(s.content)} itag=$itag ${s.format?.suffix ?: "?"} " +
+            "expected=${streamBytesOf(s)}B host=$host"
+    }
+
+    /** Blocking. Returns a message for the queue. Throws on failure or cancel. Up to 3 attempts, each different. */
     fun download(
         ctx: Context,
         t: DownloadTask,
@@ -222,24 +231,32 @@ object Engine {
                 throw IllegalStateException("Wi-Fi only is on, but you're on mobile data")
             }
         }
-        var last: Throwable? = null
-        for (attempt in 1..2) {
+        val log = StringBuilder()
+        log.append("YTGrab ").append(APP_VERSION).append(" | Android ").append(Build.VERSION.RELEASE)
+            .append(" | ").append(Build.MODEL).append('\n')
+        log.append("Video: ").append(t.item.url).append('\n')
+        log.append("Wanted: ").append(t.options.mode).append(' ')
+            .append(if (t.options.mode == Mode.VIDEO) "${t.options.videoHeight}p" else "${t.options.audioBitrate}")
+            .append(" | threads ").append(t.options.threads).append('\n')
+        var last: IOException? = null
+        for (attempt in 1..3) {
             try {
-                return downloadOnce(ctx, t, token, onProgress)
+                return downloadOnce(ctx, t, token, onProgress, attempt, log)
             } catch (e: java.util.concurrent.CancellationException) {
                 throw e
             } catch (e: IOException) {
                 last = e
+                log.append("Attempt ").append(attempt).append(" failed: ").append(e.message).append('\n')
             }
             token.check()
-            if (attempt == 1) {
+            if (attempt < 3) {
                 // links or the proof-of-origin session may have gone stale: start over with fresh ones
                 StreamCache.remove(t.item.url)
                 poProvider?.invalidate()
                 onProgress(0f, 0)
             }
         }
-        throw last ?: IllegalStateException("Download failed")
+        throw DownloadFailed(last?.message ?: "Download failed", log.toString())
     }
 
     private fun downloadOnce(
@@ -247,6 +264,8 @@ object Engine {
         t: DownloadTask,
         token: CancelToken,
         onProgress: (Float, Long) -> Unit,
+        attempt: Int,
+        log: StringBuilder,
     ): String {
         val info = StreamCache.get(t.item.url) ?: StreamInfo.getInfo(t.item.url).also { StreamCache.put(t.item.url, it) }
         val opts = buildOptions(info)
@@ -261,31 +280,54 @@ object Engine {
             val outFile: File
             var isWebm = false
 
+            var fallbackNote = ""
+            val muxedFallback = if (attempt >= 3) opts.video.lastOrNull { it.audio == null } else null
+            log.append("Attempt ").append(attempt).append(": ")
+
             if (o.mode == Mode.AUDIO) {
                 val a = pickAudio(opts, o.audioBitrate) ?: throw IllegalStateException("No audio stream found")
-                val raw = File(tmp, "audio.src")
-                progress.total = a.bytes.coerceAtLeast(1)
-                val len = fetchFile(a.stream.content, a.bytes, raw, o.threads, token, progress)
-                token.check()
                 outFile = File(tmp, fileNameFor(info, safe, "${a.kbps}k") + ".m4a")
-                muxChecked(null, raw, outFile, false, token, len)
+                if (muxedFallback != null) {
+                    // last resort: take the sound out of a combined (video + sound) stream
+                    log.append("sound from the ").append(muxedFallback.height).append("p combined stream | ")
+                        .append(describe(muxedFallback.video)).append('\n')
+                    val raw = File(tmp, "combined.src")
+                    progress.total = muxedFallback.bytes.coerceAtLeast(1)
+                    fetchFile(muxedFallback.video.content, muxedFallback.bytes, raw, o.threads, token, progress)
+                    token.check()
+                    muxChecked(null, raw, outFile, false, token, 50_000L)
+                    fallbackNote = " (sound taken from a combined stream)"
+                } else {
+                    val stream = if (attempt == 2) (a.alts.firstOrNull() ?: a.stream) else a.stream
+                    log.append(describe(stream)).append('\n')
+                    val raw = File(tmp, "audio.src")
+                    progress.total = streamBytesOf(stream).coerceAtLeast(1)
+                    val len = fetchFile(stream.content, streamBytesOf(stream), raw, o.threads, token, progress)
+                    token.check()
+                    muxChecked(null, raw, outFile, false, token, len / 2)
+                }
             } else {
-                val v = pickVideo(opts, o.videoHeight) ?: throw IllegalStateException("No video stream found")
+                val v0 = pickVideo(opts, o.videoHeight) ?: throw IllegalStateException("No video stream found")
+                val v = muxedFallback ?: v0
+                if (muxedFallback != null) fallbackNote = " (fell back to ${v.height}p with sound)"
                 isWebm = v.webm
                 val ext = if (v.webm) "webm" else "mp4"
                 outFile = File(tmp, fileNameFor(info, safe, "${v.height}p") + "." + ext)
                 if (v.audio == null) {
+                    log.append(describe(v.video)).append('\n')
                     progress.total = v.bytes.coerceAtLeast(1)
                     fetchFile(v.video.content, v.bytes, outFile, o.threads, token, progress)
                 } else {
+                    val aStream = if (attempt == 2) (v.audioAlts.firstOrNull() ?: v.audio) else v.audio
+                    log.append(describe(v.video)).append(" + ").append(describe(aStream)).append('\n')
                     val vf = File(tmp, "video.src")
                     val af = File(tmp, "audio.src")
                     progress.total = v.bytes.coerceAtLeast(1)
                     val vl = fetchFile(v.video.content, streamBytesOf(v.video), vf, o.threads, token, progress)
-                    val al = fetchFile(v.audio.content, streamBytesOf(v.audio), af, o.threads, token, progress)
+                    val al = fetchFile(aStream.content, streamBytesOf(aStream), af, o.threads, token, progress)
                     progress.total = (vl + al).coerceAtLeast(1)
                     token.check()
-                    muxChecked(vf, af, outFile, v.webm, token, vl + al)
+                    muxChecked(vf, af, outFile, v.webm, token, (vl + al) / 2)
                 }
             }
             onProgress(0.95f, 0)
@@ -315,7 +357,7 @@ object Engine {
             }
             token.check()
             saveToDownloads(ctx, outFile, folder)
-            return "Saved to Downloads/$folder$note"
+            return "Saved to Downloads/$folder$note$fallbackNote"
         } finally {
             tmp.deleteRecursively()
         }

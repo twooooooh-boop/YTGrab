@@ -27,6 +27,7 @@ data class DownloadTask(
     val progress: Float = 0f,
     val etaSec: Long = 0,
     val message: String = "",
+    val details: String = "",
 )
 
 class CancelToken {

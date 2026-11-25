@@ -132,7 +132,6 @@ fun SearchScreen() {
     val focus = LocalFocusManager.current
     val ready by Engine.ready.collectAsStateWithLifecycle()
     val status by Engine.status.collectAsStateWithLifecycle()
-    var focused by remember { mutableStateOf(false) }
     val go = { focus.clearFocus(); SearchState.search() }
 
     Column(Modifier.fillMaxSize()) {
@@ -144,7 +143,7 @@ fun SearchScreen() {
             placeholder = { Text("Song, video, or link") },
             singleLine = true,
             shape = RoundedCornerShape(28.dp),
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).onFocusChanged { focused = it.isFocused },
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).onFocusChanged { SearchState.focused = it.isFocused },
             leadingIcon = { Icon(Icons.Default.Search, null) },
             trailingIcon = {
                 if (SearchState.query.isNotEmpty()) {
@@ -167,7 +166,7 @@ fun SearchScreen() {
 
         val results = SearchState.results
         when {
-            focused -> SuggestionPanel { go() }
+            SearchState.focused -> SuggestionPanel { go() }
             SearchState.loading -> Box(Modifier.fillMaxWidth().padding(40.dp), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             }
@@ -217,11 +216,11 @@ private fun ModeButton(label: String, selected: Boolean, modifier: Modifier, onC
 @Composable
 fun ResultRow(item: SearchItem) {
     val ctx = LocalContext.current
-    var expanded by rememberSaveable(item.url) { mutableStateOf(false) }
+    val expanded = UiState.expandedUrl == item.url
     var mode by rememberSaveable(item.url) { mutableStateOf(Prefs.mode) }
     var height by rememberSaveable(item.url) { mutableStateOf(Prefs.videoHeight) }
     var aBr by rememberSaveable(item.url) { mutableStateOf(Prefs.audioBitrate) }
-    var qOpen by rememberSaveable(item.url) { mutableStateOf(false) }
+    val qOpen = UiState.qOpenUrl == item.url
     var attempt by remember(item.url) { mutableIntStateOf(0) }
     var opts by remember(item.url) { mutableStateOf(StreamCache.get(item.url)?.let { buildOptions(it) }) }
     var loading by remember(item.url) { mutableStateOf(false) }
@@ -266,7 +265,10 @@ fun ResultRow(item: SearchItem) {
     ) {
         Column(Modifier.animateContentSize()) {
             Row(
-                Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(10.dp),
+                Modifier.fillMaxWidth().clickable {
+                    UiState.expandedUrl = if (expanded) null else item.url
+                    UiState.qOpenUrl = null
+                }.padding(10.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -318,8 +320,8 @@ fun ResultRow(item: SearchItem) {
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        ModeButton("🎬  Video", mode == Mode.VIDEO, Modifier.weight(1f)) { mode = Mode.VIDEO; qOpen = false }
-                        ModeButton("🎵  Audio", mode == Mode.AUDIO, Modifier.weight(1f)) { mode = Mode.AUDIO; qOpen = false }
+                        ModeButton("🎬  Video", mode == Mode.VIDEO, Modifier.weight(1f)) { mode = Mode.VIDEO; UiState.qOpenUrl = null }
+                        ModeButton("🎵  Audio", mode == Mode.AUDIO, Modifier.weight(1f)) { mode = Mode.AUDIO; UiState.qOpenUrl = null }
                     }
 
                     // quality "button" that opens a vertical list
@@ -329,7 +331,7 @@ fun ResultRow(item: SearchItem) {
                     ) {
                         Column {
                             Row(
-                                Modifier.fillMaxWidth().clickable { qOpen = !qOpen }.padding(horizontal = 14.dp, vertical = 10.dp),
+                                Modifier.fillMaxWidth().clickable { UiState.qOpenUrl = if (qOpen) null else item.url }.padding(horizontal = 14.dp, vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Column(Modifier.weight(1f)) {
@@ -371,7 +373,7 @@ fun ResultRow(item: SearchItem) {
                                         Modifier.fillMaxWidth()
                                             .clickable {
                                                 if (mode == Mode.VIDEO) height = c.key.toIntOrNull() ?: 0 else aBr = c.key
-                                                qOpen = false
+                                                UiState.qOpenUrl = null
                                             }
                                             .padding(horizontal = 8.dp, vertical = 2.dp),
                                         verticalAlignment = Alignment.CenterVertically,
@@ -403,7 +405,7 @@ fun ResultRow(item: SearchItem) {
                                 Prefs.options().copy(mode = mode, videoHeight = height, audioBitrate = aBr),
                             )
                             Toast.makeText(ctx, "Added to queue", Toast.LENGTH_SHORT).show()
-                            if (Prefs.closeAfterAdd) { expanded = false; qOpen = false }
+                            if (Prefs.closeAfterAdd) { UiState.expandedUrl = null; UiState.qOpenUrl = null }
                             if (Prefs.openQueueAfterAdd) Nav.tab = 1
                         },
                         modifier = Modifier.fillMaxWidth().height(50.dp),

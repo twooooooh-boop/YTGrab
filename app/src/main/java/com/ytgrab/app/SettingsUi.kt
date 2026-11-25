@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -198,10 +199,10 @@ fun SettingsScreen() {
         }
     }
 
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        ScreenHeader("Settings", "Make it yours")
+    LazyColumn(Modifier.fillMaxSize()) {
+        item { ScreenHeader("Settings", "Make it yours") }
 
-        Section("Appearance") {
+        item { Section("Appearance") {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 TitleBlock("Theme", "Pick a colour style")
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(vertical = 2.dp)) {
@@ -225,9 +226,9 @@ fun SettingsScreen() {
             SwitchRow("Show thumbnails", "Turn off for a compact, text-only list", Prefs.showThumbs) {
                 Prefs.showThumbs = it; Prefs.save()
             }
-        }
+        } }
 
-        Section("Download defaults") {
+        item { Section("Download defaults") {
             SegmentRow(
                 "Default type", "What a result starts on when you open it", listOf(Mode.VIDEO, Mode.AUDIO), Prefs.mode,
                 { if (it == Mode.VIDEO) "Video" else "Audio" },
@@ -247,9 +248,9 @@ fun SettingsScreen() {
                 listOf(true, false), Prefs.fallbackBest,
                 { if (it) "Use Best" else "Closest lower" },
             ) { Prefs.fallbackBest = it; Prefs.save() }
-        }
+        } }
 
-        Section("Speed & network") {
+        item { Section("Speed & network") {
             SliderRow("Threads per file", "More threads can be faster on a good connection", Prefs.threads, 1..16) {
                 Prefs.threads = it
                 Prefs.save()
@@ -263,9 +264,9 @@ fun SettingsScreen() {
                 "Chunk size", "Size of each parallel piece", listOf(2, 4, 8), Prefs.chunkMb, { "$it MB" },
             ) { Prefs.chunkMb = it; Prefs.save() }
             SwitchRow("Wi-Fi only", "Don't download on mobile data", Prefs.wifiOnly) { Prefs.wifiOnly = it; Prefs.save() }
-        }
+        } }
 
-        Section("Artwork & tags") {
+        item { Section("Artwork & tags") {
             SwitchRow("Artwork in audio files", "Embed the thumbnail as cover art in .m4a", Prefs.artAudio) {
                 Prefs.artAudio = it; Prefs.save()
             }
@@ -290,9 +291,9 @@ fun SettingsScreen() {
             SwitchRow("Title & artist tags", "Writes the video title and channel into the file", Prefs.embedTags) {
                 Prefs.embedTags = it; Prefs.save()
             }
-        }
+        } }
 
-        Section("Files") {
+        item { Section("Files") {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 TitleBlock("Folder name", "Saved to Downloads/${Prefs.folder.ifBlank { "YTGrab" }}")
                 OutlinedTextField(
@@ -312,9 +313,9 @@ fun SettingsScreen() {
                     }
                 },
             ) { Prefs.nameTemplate = it; Prefs.save() }
-        }
+        } }
 
-        Section("Behaviour") {
+        item { Section("Behaviour") {
             SwitchRow("Close the panel after adding", "Collapses the result once it is in the queue", Prefs.closeAfterAdd) {
                 Prefs.closeAfterAdd = it; Prefs.save()
             }
@@ -326,9 +327,9 @@ fun SettingsScreen() {
                 if (!it) Prefs.history = emptyList()
                 Prefs.save()
             }
-        }
+        } }
 
-        Section("Backup & restore") {
+        item { Section("Backup & restore") {
             Text(
                 "Saves all of the settings above to a file you can keep, share, or restore on another phone.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -341,9 +342,9 @@ fun SettingsScreen() {
                 ) { Text("Restore") }
             }
             TextButton(onClick = { confirmReset = true }) { Text("Reset all settings") }
-        }
+        } }
 
-        Section("About") {
+        item { Section("About") {
             TitleBlock("YTGrab $APP_VERSION", "Uses the NewPipe extractor (GPL-3.0)")
             Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             OutlinedButton(onClick = {
@@ -352,9 +353,9 @@ fun SettingsScreen() {
                 toast(ctx, "Cache cleared")
             }) { Text("Clear cached stream info") }
             Text(REPO_URL, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
+        } }
 
-        Box(Modifier.padding(bottom = 24.dp))
+        item { Box(Modifier.padding(bottom = 24.dp)) }
     }
 
     if (confirmReset) {

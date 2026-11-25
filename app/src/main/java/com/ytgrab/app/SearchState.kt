@@ -18,6 +18,7 @@ object SearchState {
     var loading by mutableStateOf(false)
     var error by mutableStateOf<String?>(null)
     var suggestions by mutableStateOf<List<String>>(emptyList())
+    var focused by mutableStateOf(false)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var suggestJob: Job? = null
@@ -36,6 +37,12 @@ object SearchState {
             val list = withContext(Dispatchers.IO) { runCatching { Engine.suggest(t) }.getOrDefault(emptyList()) }
             if (query.trim() == t) suggestions = list
         }
+    }
+
+    /** Back from the results to the empty search page (the typed text stays so it can be edited). */
+    fun clearResults() {
+        results = emptyList()
+        error = null
     }
 
     fun search() {

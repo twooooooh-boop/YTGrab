@@ -1,5 +1,6 @@
 package com.ytgrab.app
 
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.schabi.newpipe.extractor.stream.AudioStream
 import org.schabi.newpipe.extractor.stream.DeliveryMethod
 import org.schabi.newpipe.extractor.stream.Stream
@@ -13,9 +14,10 @@ class VideoOpt(
     val audio: AudioStream?,   // null = the video stream already contains sound
     val bytes: Long,
     val webm: Boolean,
+    val audioAlts: List<AudioStream> = emptyList(),   // other audio streams to try if the first one fails
 )
 
-class AudioOpt(val kbps: Int, val stream: AudioStream, val bytes: Long)
+class AudioOpt(val kbps: Int, val stream: AudioStream, val bytes: Long, val alts: List<AudioStream> = emptyList())
 
 class StreamOptions(val info: StreamInfo, val video: List<VideoOpt>, val audio: List<AudioOpt>)
 
@@ -46,17 +48,34 @@ private fun streamBytes(s: Stream?): Long {
 
 private fun suffixOf(s: Stream): String = s.format?.suffix ?: ""
 
+private fun itagOf(s: Stream): String = s.content.toHttpUrlOrNull()?.queryParameter("itag") ?: ""
+
+/** Dubbed, audio-description and "loud" (DRC) tracks are not what anyone means by "the audio". */
+private fun isPlainTrack(s: Stream): Boolean {
+    val u = try { java.net.URLDecoder.decode(s.content, "UTF-8") } catch (e: Exception) { s.content }
+    return !(u.contains("acont=dubbed") || u.contains("acont=descriptive") ||
+        u.contains("acont=secondary") || u.contains("drc=1"))
+}
+
+/** Normal stereo AAC first (itag 140 / 141 / 139), surround and odd tracks only as spare options. */
+private val STEREO_AAC = setOf("140", "141", "139")
+
 fun buildOptions(info: StreamInfo): StreamOptions {
     val http = DeliveryMethod.PROGRESSIVE_HTTP
     val auds = info.audioStreams.filter { it.deliveryMethod == http && it.isUrl }
-    val m4a = auds.filter { suffixOf(it) == "m4a" }.sortedByDescending { it.averageBitrate }
-    val webmA = auds.filter { suffixOf(it) == "webm" }.sortedByDescending { it.averageBitrate }
-    val bestM4a = m4a.firstOrNull()
+    val m4aAll = auds.filter { suffixOf(it) == "m4a" }
+    val m4aPlain = m4aAll.filter { isPlainTrack(it) }.ifEmpty { m4aAll }
+    val m4aStd = m4aPlain.filter { itagOf(it) in STEREO_AAC }.ifEmpty { m4aPlain }
+        .sortedByDescending { it.averageBitrate }
+    val m4aRest = m4aPlain.filter { x -> m4aStd.none { it === x } }.sortedByDescending { it.averageBitrate }
+    val m4aOrder = m4aStd + m4aRest
+    val webmA = auds.filter { suffixOf(it) == "webm" && isPlainTrack(it) }.sortedByDescending { it.averageBitrate }
+    val bestM4a = m4aOrder.firstOrNull()
     val bestWebmA = webmA.firstOrNull()
 
-    val audioOpts = m4a
+    val audioOpts = m4aStd
         .distinctBy { it.averageBitrate }
-        .map { AudioOpt(it.averageBitrate, it, streamBytes(it)) }
+        .map { x -> AudioOpt(x.averageBitrate, x, streamBytes(x), m4aOrder.filter { it !== x }) }
 
     val videoOpts = ArrayList<VideoOpt>()
     val vOnly = info.videoOnlyStreams.filter { it.deliveryMethod == http && it.isUrl && it.height > 0 }
@@ -65,7 +84,7 @@ fun buildOptions(info: StreamInfo): StreamOptions {
         val vp9 = list.filter { suffixOf(it) == "webm" && it.codec?.startsWith("vp9") == true }
             .maxByOrNull { it.bitrate }
         if (avc != null && bestM4a != null) {
-            videoOpts += VideoOpt(h, avc, bestM4a, streamBytes(avc) + streamBytes(bestM4a), false)
+            videoOpts += VideoOpt(h, avc, bestM4a, streamBytes(avc) + streamBytes(bestM4a), false, m4aOrder.drop(1))
         } else if (vp9 != null && bestWebmA != null) {
             videoOpts += VideoOpt(h, vp9, bestWebmA, streamBytes(vp9) + streamBytes(bestWebmA), true)
         }

@@ -2,6 +2,7 @@
 
 package com.ytgrab.app
 
+import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -28,7 +29,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -42,6 +45,7 @@ private fun optLabel(o: DownloadOptions): String =
 @Composable
 fun QueueScreen(tasks: List<DownloadTask>) {
     val ctx = LocalContext.current
+    val clip = LocalClipboardManager.current
     val active = tasks.count { it.state == TaskState.QUEUED || it.state == TaskState.RUNNING }
     val done = tasks.count { it.state == TaskState.DONE }
 
@@ -122,6 +126,12 @@ fun QueueScreen(tasks: List<DownloadTask>) {
                                     OutlinedButton(onClick = { DownloadCenter.cancel(t.id) }) { Text("Cancel") }
                                 TaskState.FAILED, TaskState.CANCELLED -> {
                                     Button(onClick = { DownloadCenter.retry(ctx, t.id) }) { Text("Retry") }
+                                    if (t.state == TaskState.FAILED && t.details.isNotBlank()) {
+                                        OutlinedButton(onClick = {
+                                            clip.setText(AnnotatedString(t.details + "\nResult: " + t.message))
+                                            Toast.makeText(ctx, "Details copied", Toast.LENGTH_SHORT).show()
+                                        }) { Text("Copy details") }
+                                    }
                                     OutlinedButton(onClick = { DownloadCenter.remove(t.id) }) { Text("Remove") }
                                 }
                                 TaskState.DONE ->

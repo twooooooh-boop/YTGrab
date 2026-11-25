@@ -17,6 +17,9 @@ import java.util.concurrent.atomic.AtomicReference
 /** A download that finished but the result is not real media (empty, stub, HTML page...). */
 class BadMediaException(message: String) : IOException(message)
 
+/** Final failure after every attempt; [details] is a full report the user can copy. */
+class DownloadFailed(summary: String, val details: String) : IOException(summary)
+
 /** Downloads one file with several parallel range requests and checks every byte arrived. */
 object ChunkDownloader {
 

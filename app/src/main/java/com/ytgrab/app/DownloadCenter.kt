@@ -75,7 +75,9 @@ object DownloadCenter {
                 update(t.id) { it.copy(state = TaskState.CANCELLED, message = "Cancelled") }
             } else {
                 val m = e.message?.lines()?.firstOrNull { it.isNotBlank() } ?: e.javaClass.simpleName
-                update(t.id) { it.copy(state = TaskState.FAILED, message = m) }
+                val report = (e as? DownloadFailed)?.details
+                    ?: ("YTGrab $APP_VERSION | ${e.javaClass.simpleName}: ${e.message}\nVideo: ${t.item.url}")
+                update(t.id) { it.copy(state = TaskState.FAILED, message = m, details = report) }
             }
         } finally {
             tokens.remove(t.id)

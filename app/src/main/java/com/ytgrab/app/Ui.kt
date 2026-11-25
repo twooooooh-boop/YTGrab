@@ -5,6 +5,7 @@ package com.ytgrab.app
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -31,10 +32,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -42,11 +45,17 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 const val REPO_URL = "github.com/twooooooh-boop/YTGrab"
-const val APP_VERSION = "2.3"
+const val APP_VERSION = "2.4"
 
 /** Which bottom tab is open (shared so other screens can jump to the queue). */
 object Nav {
     var tab by mutableIntStateOf(0)
+}
+
+/** Which result card is open, and whether its quality list is open (one at a time, so Back can close them). */
+object UiState {
+    var expandedUrl by mutableStateOf<String?>(null)
+    var qOpenUrl by mutableStateOf<String?>(null)
 }
 
 @Composable
@@ -54,6 +63,21 @@ fun AppRoot() {
     val ctx = LocalContext.current
     val tasks by DownloadCenter.tasks.collectAsStateWithLifecycle()
     val active = tasks.count { it.state == TaskState.QUEUED || it.state == TaskState.RUNNING }
+
+    val focus = LocalFocusManager.current
+
+    // Android's Back key: step back one level at a time, and only leave the app from the Search home.
+    val canGoBack = Nav.tab != 0 || SearchState.focused || UiState.qOpenUrl != null ||
+        UiState.expandedUrl != null || SearchState.results.isNotEmpty() || SearchState.error != null
+    BackHandler(enabled = canGoBack) {
+        when {
+            Nav.tab != 0 -> Nav.tab = 0
+            SearchState.focused -> focus.clearFocus()
+            UiState.qOpenUrl != null -> UiState.qOpenUrl = null
+            UiState.expandedUrl != null -> UiState.expandedUrl = null
+            else -> SearchState.clearResults()
+        }
+    }
 
     val notifLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     LaunchedEffect(Unit) {
