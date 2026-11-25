@@ -11,20 +11,39 @@ import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
-/** Downloads one file with several parallel range requests. */
+/** A download that finished but the result is not real media (empty, stub, HTML page...). */
+class BadMediaException(message: String) : IOException(message)
+
+/** Downloads one file with several parallel range requests and checks every byte arrived. */
 object ChunkDownloader {
+
+    private fun looksLikeNotMedia(contentType: String): Boolean {
+        val ct = contentType.lowercase()
+        return ct.startsWith("text/") || ct.contains("json") || ct.contains("html") || ct.contains("xml")
+    }
+
+    /** Real size of the file on the server (asks for 1 byte). */
     fun probeLength(url: String): Long {
         val req = Request.Builder().url(url).header("Range", "bytes=0-0").header("User-Agent", Http.UA).build()
         Http.client.newCall(req).execute().use { r ->
-            val cr = r.header("Content-Range")           // bytes 0-0/12345
-            val total = cr?.substringAfter('/')?.trim()?.toLongOrNull()
+            if (r.code != 206 && r.code != 200) throw IOException("HTTP ${r.code} while checking the file size")
+            val ct = r.header("Content-Type").orEmpty()
+            if (looksLikeNotMedia(ct)) throw IOException("Server sent \"$ct\" instead of media")
+            val total = r.header("Content-Range")?.substringAfter('/')?.trim()?.toLongOrNull()
             if (total != null && total > 0) return total
             val cl = r.header("Content-Length")?.toLongOrNull()
             if (cl != null && cl > 1) return cl
         }
-        throw IOException("Could not read file size")
+        throw IOException("Could not read the file size")
+    }
+
+    private fun writeFully(ch: FileChannel, data: ByteArray, len: Int, pos: Long) {
+        val bb = ByteBuffer.wrap(data, 0, len)
+        var p = pos
+        while (bb.hasRemaining()) p += ch.write(bb, p)
     }
 
     fun download(
@@ -42,6 +61,7 @@ object ChunkDownloader {
         val chunks = ((total + chunk - 1) / chunk).toInt()
         val next = AtomicInteger(0)
         val stop = AtomicBoolean(false)
+        val written = AtomicLong(0)
         val firstError = AtomicReference<Throwable?>(null)
         val n = threads.coerceIn(1, 16).coerceAtMost(chunks.coerceAtLeast(1))
         val pool = Executors.newFixedThreadPool(n)
@@ -63,6 +83,7 @@ object ChunkDownloader {
                                 var counted = 0L
                                 try {
                                     fetch(url, start, end, channel, token, stop) { b -> counted += b; onBytes(b) }
+                                    written.addAndGet(end - start + 1)
                                     break
                                 } catch (e: IOException) {
                                     onBytes(-counted)
@@ -83,11 +104,14 @@ object ChunkDownloader {
                 try {
                     f.get()
                 } catch (e: ExecutionException) {
-                    // remember it, the real cause is reported below
+                    // remembered in firstError, reported below
                 }
             }
             firstError.get()?.let { throw it }
             token.check()
+            if (written.get() != total) {
+                throw IOException("Incomplete download: got ${written.get()} of $total bytes")
+            }
         } finally {
             pool.shutdownNow()
             runCatching { channel.close() }
@@ -110,6 +134,8 @@ object ChunkDownloader {
             .build()
         Http.client.newCall(req).execute().use { r ->
             if (r.code != 206) throw IOException("HTTP ${r.code}")
+            val ct = r.header("Content-Type").orEmpty()
+            if (looksLikeNotMedia(ct)) throw IOException("Server sent \"$ct\" instead of media (HTTP ${r.code})")
             val body = r.body ?: throw IOException("Empty response")
             val src = body.byteStream()
             val buf = ByteArray(64 * 1024)
@@ -119,7 +145,7 @@ object ChunkDownloader {
                 if (stop.get()) throw CancellationException("stopped")
                 val read = src.read(buf)
                 if (read < 0) break
-                channel.write(ByteBuffer.wrap(buf, 0, read), pos)
+                writeFully(channel, buf, read, pos)
                 pos += read
                 onBytes(read.toLong())
             }

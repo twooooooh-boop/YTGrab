@@ -42,7 +42,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 const val REPO_URL = "github.com/twooooooh-boop/YTGrab"
-const val APP_VERSION = "2.1"
+const val APP_VERSION = "2.2"
 
 /** Which bottom tab is open (shared so other screens can jump to the queue). */
 object Nav {

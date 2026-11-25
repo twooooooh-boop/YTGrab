@@ -25,18 +25,22 @@ import org.schabi.newpipe.extractor.stream.StreamInfo
 import org.schabi.newpipe.extractor.stream.StreamInfoItem
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.atomic.AtomicLong
 
 /** YouTube access through the NewPipe extractor: search, stream list, download, mux, tag. */
 object Engine {
     val status = MutableStateFlow("Starting engine…")
     val ready = MutableStateFlow(false)
+    @Volatile private var poProvider: WebPoTokenProvider? = null
 
     fun init(app: Context) {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 NewPipe.init(NpDownloader(), Localization.DEFAULT, ContentCountry.DEFAULT)
-                YoutubeStreamExtractor.setPoTokenProvider(WebPoTokenProvider(app.applicationContext))
+                val provider = WebPoTokenProvider(app.applicationContext)
+                poProvider = provider
+                YoutubeStreamExtractor.setPoTokenProvider(provider)
                 ready.value = true
                 status.value = "Engine ready (NewPipe extractor)"
             } catch (e: Throwable) {
@@ -113,16 +117,19 @@ object Engine {
         info.thumbnails.sortedByDescending { it.height }.forEach { urls.add(it.url) }
         urls.add("https://i.ytimg.com/vi/${info.id}/maxresdefault.jpg")
         urls.add("https://i.ytimg.com/vi/${info.id}/hqdefault.jpg")
-        for (u in urls.distinct().take(5)) {
-            val bytes = httpBytes(u) ?: continue
-            var bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: continue
-            if (square) {
-                val side = minOf(bmp.width, bmp.height)
-                bmp = Bitmap.createBitmap(bmp, (bmp.width - side) / 2, (bmp.height - side) / 2, side, side)
+        for (round in 1..3) {
+            for (u in urls.distinct().take(5)) {
+                val bytes = httpBytes(u) ?: continue
+                var bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: continue
+                if (square) {
+                    val side = minOf(bmp.width, bmp.height)
+                    bmp = Bitmap.createBitmap(bmp, (bmp.width - side) / 2, (bmp.height - side) / 2, side, side)
+                }
+                val out = ByteArrayOutputStream()
+                bmp.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(50, 100), out)
+                return out.toByteArray()
             }
-            val out = ByteArrayOutputStream()
-            bmp.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(50, 100), out)
-            return out.toByteArray()
+            Thread.sleep(700L * round)
         }
         return null
     }
@@ -142,7 +149,12 @@ object Engine {
     }
 
     private fun fetchFile(url: String, expected: Long, dest: File, threads: Int, token: CancelToken, p: Progress): Long {
-        val len = if (expected > 0) expected else ChunkDownloader.probeLength(url)
+        val probed = runCatching { ChunkDownloader.probeLength(url) }
+        val len = probed.getOrNull()
+            ?: if (expected > 0) expected else throw (probed.exceptionOrNull() ?: IOException("Could not read the file size"))
+        if (expected > 100_000 && len < expected / 2) {
+            throw BadMediaException("The server sent a tiny placeholder (${fmtSize(len)}) instead of the real stream (${fmtSize(expected)})")
+        }
         ChunkDownloader.download(url, len, dest, threads, token, Prefs.chunkMb * 1024L * 1024L) { p.add(it) }
         return len
     }
@@ -162,7 +174,36 @@ object Engine {
         }
     }
 
-    /** Blocking. Returns a message for the queue. Throws on failure or cancel. */
+    private fun headHex(f: File): String = try {
+        f.inputStream().use { s ->
+            val b = ByteArray(12)
+            val n = s.read(b)
+            if (n <= 0) "empty file" else b.take(n).joinToString(" ") { "%02x".format(it) }
+        }
+    } catch (e: Exception) {
+        "unreadable"
+    }
+
+    /** Joins the streams and refuses to continue when the result is empty or broken. */
+    private fun muxChecked(video: File?, audio: File?, out: File, webm: Boolean, token: CancelToken, srcBytes: Long) {
+        try {
+            Muxer.mux(video, audio, out, webm, token)
+        } catch (e: java.util.concurrent.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val src = video ?: audio!!
+            throw BadMediaException(
+                "The downloaded file is not playable (${e.message}). " +
+                    "Source ${src.length()} bytes, starts with ${headHex(src)}"
+            )
+        }
+        val minOk = maxOf(20_000L, srcBytes / 2)
+        if (out.length() < minOk) {
+            throw BadMediaException("The result is only ${out.length()} bytes (source ${fmtSize(srcBytes)}), so it was not saved")
+        }
+    }
+
+    /** Blocking. Returns a message for the queue. Throws on failure or cancel. Tries twice with fresh data. */
     fun download(
         ctx: Context,
         t: DownloadTask,
@@ -175,6 +216,32 @@ object Engine {
                 throw IllegalStateException("Wi-Fi only is on, but you're on mobile data")
             }
         }
+        var last: Throwable? = null
+        for (attempt in 1..2) {
+            try {
+                return downloadOnce(ctx, t, token, onProgress)
+            } catch (e: java.util.concurrent.CancellationException) {
+                throw e
+            } catch (e: IOException) {
+                last = e
+            }
+            token.check()
+            if (attempt == 1) {
+                // links or the proof-of-origin session may have gone stale: start over with fresh ones
+                StreamCache.remove(t.item.url)
+                poProvider?.invalidate()
+                onProgress(0f, 0)
+            }
+        }
+        throw last ?: IllegalStateException("Download failed")
+    }
+
+    private fun downloadOnce(
+        ctx: Context,
+        t: DownloadTask,
+        token: CancelToken,
+        onProgress: (Float, Long) -> Unit,
+    ): String {
         val info = StreamCache.get(t.item.url) ?: StreamInfo.getInfo(t.item.url).also { StreamCache.put(t.item.url, it) }
         val opts = buildOptions(info)
         val o = t.options
@@ -192,10 +259,10 @@ object Engine {
                 val a = pickAudio(opts, o.audioBitrate) ?: throw IllegalStateException("No audio stream found")
                 val raw = File(tmp, "audio.src")
                 progress.total = a.bytes.coerceAtLeast(1)
-                fetchFile(a.stream.content, a.bytes, raw, o.threads, token, progress)
+                val len = fetchFile(a.stream.content, a.bytes, raw, o.threads, token, progress)
                 token.check()
                 outFile = File(tmp, fileNameFor(info, safe, "${a.kbps}k") + ".m4a")
-                Muxer.mux(null, raw, outFile, false, token)
+                muxChecked(null, raw, outFile, false, token, len)
             } else {
                 val v = pickVideo(opts, o.videoHeight) ?: throw IllegalStateException("No video stream found")
                 isWebm = v.webm
@@ -212,7 +279,7 @@ object Engine {
                     val al = fetchFile(v.audio.content, streamBytesOf(v.audio), af, o.threads, token, progress)
                     progress.total = (vl + al).coerceAtLeast(1)
                     token.check()
-                    Muxer.mux(vf, af, outFile, v.webm, token)
+                    muxChecked(vf, af, outFile, v.webm, token, vl + al)
                 }
             }
             onProgress(0.95f, 0)
@@ -221,26 +288,28 @@ object Engine {
             // artwork + tags (each can be switched off in Settings)
             val wantArt = if (o.mode == Mode.AUDIO) Prefs.artAudio else Prefs.artVideo
             val wantTags = Prefs.embedTags
-            var artworkOk = false
+            var note = ""
             if (!isWebm && (outFile.extension == "mp4" || outFile.extension == "m4a") && (wantArt || wantTags)) {
                 val cover = if (wantArt) fetchCover(info, o.mode == Mode.AUDIO && Prefs.squareCover, Prefs.coverQuality) else null
                 val artist = (info.uploaderName ?: "").removeSuffix(" - Topic")
-                val ok = Mp4Tagger.tag(
+                val reason = Mp4Tagger.tag(
                     outFile,
                     if (wantTags) (info.name ?: safe) else "",
                     if (wantTags) artist else "",
                     cover,
                 )
-                artworkOk = ok && cover != null
+                note = when {
+                    !wantArt -> ""
+                    cover == null -> " (the cover could not be downloaded)"
+                    reason != null -> " (artwork not embedded: $reason)"
+                    else -> " (with artwork)"
+                }
+            } else if (isWebm && wantArt) {
+                note = " (WebM can't hold artwork here)"
             }
             token.check()
             saveToDownloads(ctx, outFile, folder)
-            return when {
-                artworkOk -> "Saved to Downloads/$folder (with artwork)"
-                !wantArt -> "Saved to Downloads/$folder"
-                isWebm -> "Saved to Downloads/$folder (WebM can't hold artwork here)"
-                else -> "Saved to Downloads/$folder (artwork could not be embedded)"
-            }
+            return "Saved to Downloads/$folder$note"
         } finally {
             tmp.deleteRecursively()
         }

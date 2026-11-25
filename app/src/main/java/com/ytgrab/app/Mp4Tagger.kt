@@ -63,8 +63,8 @@ object Mp4Tagger {
         return box("udta", box("meta", metaBody.toByteArray()))
     }
 
-    /** Returns true when the tags were written. */
-    fun tag(file: File, title: String, artist: String, coverJpeg: ByteArray?): Boolean {
+    /** Returns null when the tags were written, otherwise a short reason why not. */
+    fun tag(file: File, title: String, artist: String, coverJpeg: ByteArray?): String? {
         return try {
             RandomAccessFile(file, "rw").use { raf ->
                 val len = raf.length()
@@ -83,7 +83,7 @@ object Mp4Tagger {
                         0L -> len - pos
                         else -> size32
                     }
-                    if (size < 8) return false
+                    if (size < 8) return@use "unexpected file layout"
                     val t = String(type, Charsets.ISO_8859_1)
                     if (t == "moov") {
                         moovPos = pos
@@ -93,18 +93,18 @@ object Mp4Tagger {
                     if (t == "mdat" && mdatPos < 0) mdatPos = pos
                     pos += size
                 }
-                if (moovPos < 0 || !moovHeaderOk) return false
-                if (moovPos + moovSize != len) return false      // moov must be the last box
-                if (mdatPos < 0 || mdatPos > moovPos) return false
+                if (moovPos < 0 || !moovHeaderOk) return@use "file has no index"
+                if (moovPos + moovSize != len) return@use "index is not at the end of the file"
+                if (mdatPos < 0 || mdatPos > moovPos) return@use "file has no media data"
                 val udta = buildUdta(title, artist, coverJpeg)
                 raf.seek(moovPos)
                 raf.writeInt((moovSize + udta.size).toInt())
                 raf.seek(len)
                 raf.write(udta)
-                true
+                null
             }
         } catch (e: Exception) {
-            false
+            "error: ${e.message}"
         }
     }
 }

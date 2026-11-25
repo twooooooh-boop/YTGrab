@@ -195,6 +195,14 @@ class WebPoTokenProvider(private val app: Context) : PoTokenProvider {
     private var visitorData: String = ""
     private var streamingPot: String = ""
 
+    /** Throws away the current proof-of-origin session so the next request builds a fresh one. */
+    fun invalidate() {
+        synchronized(lock) {
+            gen?.close()
+            gen = null
+        }
+    }
+
     override fun getWebClientPoToken(videoId: String): PoTokenResult? {
         return try {
             val snap = synchronized(lock) {

@@ -2,6 +2,7 @@ package com.ytgrab.app
 
 import android.media.MediaCodec
 import android.media.MediaExtractor
+import android.media.MediaFormat
 import android.media.MediaMuxer
 import java.io.File
 import java.nio.ByteBuffer
@@ -10,9 +11,14 @@ import java.nio.ByteBuffer
 object Muxer {
     private fun open(f: File, prefix: String): Pair<MediaExtractor, Int> {
         val ex = MediaExtractor()
-        ex.setDataSource(f.absolutePath)
+        try {
+            ex.setDataSource(f.absolutePath)
+        } catch (e: Exception) {
+            ex.release()
+            throw e
+        }
         for (i in 0 until ex.trackCount) {
-            val mime = ex.getTrackFormat(i).getString(android.media.MediaFormat.KEY_MIME).orEmpty()
+            val mime = ex.getTrackFormat(i).getString(MediaFormat.KEY_MIME).orEmpty()
             if (mime.startsWith(prefix)) {
                 ex.selectTrack(i)
                 return ex to i
@@ -22,11 +28,13 @@ object Muxer {
         throw IllegalStateException("No $prefix track in ${f.name}")
     }
 
-    fun mux(video: File?, audio: File?, out: File, webm: Boolean, token: CancelToken) {
+    /** Returns how many samples were written. Throws when there is nothing playable. */
+    fun mux(video: File?, audio: File?, out: File, webm: Boolean, token: CancelToken): Int {
         val format = if (webm) MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM else MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
         val muxer = MediaMuxer(out.absolutePath, format)
         var vEx: MediaExtractor? = null
         var aEx: MediaExtractor? = null
+        var samples = 0
         try {
             var vTrackOut = -1
             var aTrackOut = -1
@@ -48,11 +56,15 @@ object Muxer {
             fun pump(ex: MediaExtractor, track: Int) {
                 buf.clear()
                 val size = ex.readSampleData(buf, 0)
-                if (size < 0) return
+                if (size < 0) {
+                    ex.advance()
+                    return
+                }
                 val flags = if (ex.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC != 0)
                     MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
                 info.set(0, size, ex.sampleTime, flags)
                 muxer.writeSampleData(track, buf, info)
+                samples++
                 ex.advance()
             }
 
@@ -70,7 +82,9 @@ object Muxer {
                     aTime = aEx.sampleTime
                 }
             }
+            if (samples == 0) throw IllegalStateException("the stream contains no playable data")
             muxer.stop()
+            return samples
         } finally {
             runCatching { vEx?.release() }
             runCatching { aEx?.release() }

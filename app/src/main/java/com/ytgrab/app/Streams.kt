@@ -20,9 +20,22 @@ class AudioOpt(val kbps: Int, val stream: AudioStream, val bytes: Long)
 class StreamOptions(val info: StreamInfo, val video: List<VideoOpt>, val audio: List<AudioOpt>)
 
 object StreamCache {
-    private val map = ConcurrentHashMap<String, StreamInfo>()
-    fun get(url: String): StreamInfo? = map[url]
-    fun put(url: String, info: StreamInfo) { map[url] = info }
+    private class Entry(val info: StreamInfo, val at: Long)
+    private const val TTL_MS = 10 * 60 * 1000L
+    private val map = ConcurrentHashMap<String, Entry>()
+
+    /** Stream links expire, so cached info is only trusted for a few minutes. */
+    fun get(url: String): StreamInfo? {
+        val e = map[url] ?: return null
+        if (System.currentTimeMillis() - e.at > TTL_MS) {
+            map.remove(url)
+            return null
+        }
+        return e.info
+    }
+
+    fun put(url: String, info: StreamInfo) { map[url] = Entry(info, System.currentTimeMillis()) }
+    fun remove(url: String) { map.remove(url) }
     fun clear() { map.clear() }
 }
 
