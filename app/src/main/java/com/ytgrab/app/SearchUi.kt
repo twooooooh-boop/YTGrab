@@ -20,6 +20,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -32,6 +35,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -68,58 +72,110 @@ private fun defaultsLabel(): String =
     if (Prefs.mode == Mode.VIDEO) "video · " + (if (Prefs.videoHeight == 0) "Best" else "${Prefs.videoHeight}p")
     else "audio · " + (if (Prefs.audioBitrate == "Best") "Best" else "${Prefs.audioBitrate} kbps")
 
+/** One line in the panel: round icon, text, optional remove (x) and "put this in the box" (arrow). */
 @Composable
-private fun SuggestionRow(icon: String, text: String, onFill: () -> Unit, onRemove: (() -> Unit)?, onPick: () -> Unit) {
+private fun PanelRow(
+    leading: @Composable () -> Unit,
+    text: String,
+    onFill: (() -> Unit)?,
+    onRemove: (() -> Unit)?,
+    onPick: () -> Unit,
+) {
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onPick).padding(start = 20.dp, end = 4.dp),
+        Modifier.fillMaxWidth().clickable(onClick = onPick).padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(icon, Modifier.width(34.dp))
+        Box(
+            Modifier.size(38.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceContainerHighest),
+            contentAlignment = Alignment.Center,
+        ) { leading() }
         Text(
-            text, Modifier.weight(1f).padding(vertical = 12.dp),
+            text,
+            Modifier.weight(1f).padding(horizontal = 14.dp),
             maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge,
         )
         if (onRemove != null) {
-            IconButton(onClick = onRemove) { Icon(Icons.Default.Close, "Remove") }
+            IconButton(onClick = onRemove) {
+                Icon(Icons.Default.Close, "Remove", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
-        IconButton(onClick = onFill) { Text("↖", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        if (onFill != null) {
+            IconButton(onClick = onFill) { Text("↖", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        }
     }
 }
 
-/** Shown while the search box is focused: your recent searches when it is empty, YouTube's suggestions while typing. */
+@Composable
+private fun PanelDivider() {
+    HorizontalDivider(
+        Modifier.padding(start = 68.dp, end = 16.dp),
+        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+    )
+}
+
+/** The floating card that holds recents / suggestions. */
+@Composable
+private fun PanelCard(title: String, trailing: @Composable (() -> Unit)? = null, content: @Composable () -> Unit) {
+    Surface(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+        shape = RoundedCornerShape(28.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        tonalElevation = 2.dp,
+        shadowElevation = 4.dp,
+    ) {
+        Column(Modifier.padding(top = 12.dp, bottom = 8.dp)) {
+            Row(
+                Modifier.fillMaxWidth().padding(start = 20.dp, end = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                trailing?.invoke()
+            }
+            content()
+        }
+    }
+}
+
+/** Shown while the search box is focused: recent searches when it is empty, YouTube's suggestions while typing. */
 @Composable
 private fun SuggestionPanel(onPick: () -> Unit) {
     val q = SearchState.query.trim()
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 16.dp)) {
         if (q.isEmpty()) {
             if (Prefs.saveHistory && Prefs.history.isNotEmpty()) {
-                item {
-                    Row(
-                        Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text("Recent searches", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-                        TextButton(onClick = { Prefs.clearHistory() }) { Text("Clear all") }
+                PanelCard(
+                    "Recent searches",
+                    trailing = { TextButton(onClick = { Prefs.clearHistory() }) { Text("Clear all") } },
+                ) {
+                    Prefs.history.forEachIndexed { i, h ->
+                        if (i > 0) PanelDivider()
+                        PanelRow(
+                            leading = { Text("🕘", style = MaterialTheme.typography.bodyMedium) },
+                            text = h,
+                            onFill = { SearchState.onQueryChanged(h) },
+                            onRemove = { Prefs.removeHistory(h) },
+                        ) { SearchState.onQueryChanged(h); onPick() }
                     }
                 }
-                items(Prefs.history) { h ->
-                    SuggestionRow(
-                        "🕘", h,
-                        onFill = { SearchState.onQueryChanged(h) },
-                        onRemove = { Prefs.removeHistory(h) },
-                    ) { SearchState.onQueryChanged(h); onPick() }
-                }
             } else {
-                item { EmptyState("⌨️", "Start typing", "YouTube suggestions will show up here as you type.") }
+                EmptyState("⌨️", "Start typing", "YouTube suggestions will show up here as you type.")
             }
         } else {
-            item {
-                SuggestionRow("🔍", q, onFill = {}, onRemove = null) { onPick() }
-            }
-            items(SearchState.suggestions.filterNot { it.equals(q, ignoreCase = true) }) { s ->
-                SuggestionRow("🔍", s, onFill = { SearchState.onQueryChanged(s) }, onRemove = null) {
-                    SearchState.onQueryChanged(s); onPick()
+            val list = SearchState.suggestions.filterNot { it.equals(q, ignoreCase = true) }
+            PanelCard("Suggestions") {
+                PanelRow(
+                    leading = { Icon(Icons.Default.Search, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary) },
+                    text = q, onFill = null, onRemove = null,
+                ) { onPick() }
+                list.forEach { sug ->
+                    PanelDivider()
+                    PanelRow(
+                        leading = { Icon(Icons.Default.Search, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+                        text = sug,
+                        onFill = { SearchState.onQueryChanged(sug) },
+                        onRemove = null,
+                    ) { SearchState.onQueryChanged(sug); onPick() }
                 }
             }
         }

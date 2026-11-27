@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -15,10 +16,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -41,6 +46,19 @@ private fun optLabel(o: DownloadOptions): String =
     if (o.mode == Mode.VIDEO)
         "Video · " + (if (o.videoHeight == 0) "Best" else "${o.videoHeight}p") + " · ${o.threads} threads"
     else "Audio · m4a · " + (if (o.audioBitrate == "Best") "Best" else "${o.audioBitrate} kbps") + " · ${o.threads} threads"
+
+private fun statusOf(t: DownloadTask): String = when (t.state) {
+    TaskState.QUEUED -> "Queued"
+    TaskState.RUNNING ->
+        if (t.message.isNotEmpty()) t.message
+        else {
+            val size = if (t.totalBytes > 1) "${fmtSize(t.doneBytes)} / ${fmtSize(t.totalBytes)} · " else ""
+            size + "${(t.progress * 100).toInt()}%" + if (t.etaSec > 0) " · ${fmtEta(t.etaSec)} left" else ""
+        }
+    TaskState.DONE -> "✓  " + t.message
+    TaskState.FAILED -> "Failed: ${t.message}"
+    TaskState.CANCELLED -> "Cancelled"
+}
 
 @Composable
 fun QueueScreen(tasks: List<DownloadTask>) {
@@ -73,8 +91,12 @@ fun QueueScreen(tasks: List<DownloadTask>) {
                     shape = RoundedCornerShape(22.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
                 ) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.padding(start = 14.dp, end = 6.dp, top = 14.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            Modifier.padding(end = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
                             if (Prefs.showThumbs) {
                                 AsyncImage(
                                     model = t.item.thumb,
@@ -90,7 +112,7 @@ fun QueueScreen(tasks: List<DownloadTask>) {
                                 )
                                 Text(
                                     optLabel(t.options), style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1,
                                 )
                             }
                         }
@@ -98,21 +120,16 @@ fun QueueScreen(tasks: List<DownloadTask>) {
                         if (t.state == TaskState.RUNNING || t.state == TaskState.QUEUED) {
                             LinearProgressIndicator(
                                 progress = { t.progress },
-                                modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                                modifier = Modifier.fillMaxWidth().padding(end = 8.dp).height(6.dp).clip(RoundedCornerShape(3.dp)),
                             )
                         }
 
-                        val status = when (t.state) {
-                            TaskState.QUEUED -> "Queued"
-                            TaskState.RUNNING ->
-                                if (t.message.isNotEmpty()) t.message
-                                else "${(t.progress * 100).toInt()}%" + if (t.etaSec > 0) " · ${t.etaSec}s left" else ""
-                            TaskState.DONE -> "✓  " + t.message
-                            TaskState.FAILED -> "Failed: ${t.message}"
-                            TaskState.CANCELLED -> "Cancelled"
-                        }
                         Text(
-                            status, style = MaterialTheme.typography.bodySmall,
+                            statusOf(t),
+                            Modifier.padding(end = 8.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
                             color = when (t.state) {
                                 TaskState.FAILED -> MaterialTheme.colorScheme.error
                                 TaskState.DONE -> MaterialTheme.colorScheme.primary
@@ -120,22 +137,34 @@ fun QueueScreen(tasks: List<DownloadTask>) {
                             },
                         )
 
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
                             when (t.state) {
                                 TaskState.QUEUED, TaskState.RUNNING ->
-                                    OutlinedButton(onClick = { DownloadCenter.cancel(t.id) }) { Text("Cancel") }
+                                    OutlinedButton(onClick = { DownloadCenter.cancel(t.id) }) { Text("Cancel", maxLines = 1) }
                                 TaskState.FAILED, TaskState.CANCELLED -> {
-                                    Button(onClick = { DownloadCenter.retry(ctx, t.id) }) { Text("Retry") }
-                                    if (t.state == TaskState.FAILED && t.details.isNotBlank()) {
-                                        OutlinedButton(onClick = {
-                                            clip.setText(AnnotatedString(t.details + "\nResult: " + t.message))
-                                            Toast.makeText(ctx, "Details copied", Toast.LENGTH_SHORT).show()
-                                        }) { Text("Copy details") }
+                                    Button(onClick = { DownloadCenter.retry(ctx, t.id) }, modifier = Modifier.weight(1f)) {
+                                        Text("Retry", maxLines = 1, softWrap = false)
                                     }
-                                    OutlinedButton(onClick = { DownloadCenter.remove(t.id) }) { Text("Remove") }
+                                    if (t.state == TaskState.FAILED && t.details.isNotBlank()) {
+                                        OutlinedButton(
+                                            onClick = {
+                                                clip.setText(AnnotatedString(t.details + "\nResult: " + t.message))
+                                                Toast.makeText(ctx, "Error report copied", Toast.LENGTH_SHORT).show()
+                                            },
+                                            modifier = Modifier.weight(1f),
+                                        ) { Text("Copy error", maxLines = 1, softWrap = false) }
+                                    }
                                 }
-                                TaskState.DONE ->
-                                    OutlinedButton(onClick = { DownloadCenter.remove(t.id) }) { Text("Remove") }
+                                TaskState.DONE -> Spacer(Modifier.weight(1f))
+                            }
+                            if (t.state != TaskState.QUEUED && t.state != TaskState.RUNNING) {
+                                IconButton(onClick = { DownloadCenter.remove(t.id) }) {
+                                    Icon(Icons.Default.Close, "Remove")
+                                }
                             }
                         }
                     }

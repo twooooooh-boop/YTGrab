@@ -142,17 +142,21 @@ object Engine {
         return null
     }
 
-    private class Progress(val onProgress: (Float, Long) -> Unit) {
+    private class Progress(val onProgress: (Float, Long, Long, Long) -> Unit) {
         val done = AtomicLong(0)
         @Volatile var total = 1L
         private val started = System.currentTimeMillis()
+        @Volatile private var lastEmit = 0L
 
         fun add(n: Long) {
             val d = done.addAndGet(n).coerceAtLeast(0)
+            val now = System.currentTimeMillis()
+            if (now - lastEmit < 120 && d < total) return
+            lastEmit = now
             val frac = (d.toFloat() / total.coerceAtLeast(1)).coerceIn(0f, 1f) * 0.92f
-            val secs = (System.currentTimeMillis() - started) / 1000.0
+            val secs = (now - started) / 1000.0
             val eta = if (secs > 2 && d > 0) ((total - d) / (d / secs)).toLong().coerceAtLeast(0) else 0L
-            onProgress(frac, eta)
+            onProgress(frac, eta, d, total)
         }
     }
 
@@ -192,18 +196,39 @@ object Engine {
         "unreadable"
     }
 
-    /** Joins the streams and refuses to continue when the result is empty or broken. */
-    private fun muxChecked(video: File?, audio: File?, out: File, webm: Boolean, token: CancelToken, minBytes: Long) {
+    /** Joins the streams (Android's muxer first, our own re-wrapper if that fails) and refuses broken results. */
+    private fun muxChecked(
+        video: File?, audio: File?, out: File, webm: Boolean,
+        token: CancelToken, minBytes: Long, log: StringBuilder,
+    ) {
+        var firstError: Exception? = null
         try {
             Muxer.mux(video, audio, out, webm, token)
         } catch (e: java.util.concurrent.CancellationException) {
             throw e
         } catch (e: Exception) {
+            firstError = e
+            log.append("  Android muxer: ").append(e.message).append('\n')
+        }
+        val first = firstError
+        if (first != null) {
             val src = video ?: audio!!
-            throw BadMediaException(
-                "The downloaded file is not playable (${e.message}). " +
-                    "Source ${src.length()} bytes, starts with ${headHex(src)}"
-            )
+            if (webm) {
+                throw BadMediaException("Could not read the downloaded media (${first.message}). Source ${src.length()} bytes, starts with ${headHex(src)}")
+            }
+            out.delete()
+            try {
+                val n = Fmp4.remux(video, audio, out, token)
+                Muxer.verify(out)
+                log.append("  Own re-wrapper OK: ").append(n).append(" samples\n")
+            } catch (e: java.util.concurrent.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                throw BadMediaException(
+                    "Could not read the downloaded media (${first.message}; own re-wrapper: ${e.message}). " +
+                        "Source ${src.length()} bytes, starts with ${headHex(src)}, boxes: ${Fmp4.summary(src)}"
+                )
+            }
         }
         val minOk = maxOf(20_000L, minBytes)
         if (out.length() < minOk) {
@@ -223,7 +248,7 @@ object Engine {
         ctx: Context,
         t: DownloadTask,
         token: CancelToken,
-        onProgress: (Float, Long) -> Unit,
+        onProgress: (Float, Long, Long, Long) -> Unit,
     ): String {
         if (Prefs.wifiOnly) {
             val cm = ctx.getSystemService(ConnectivityManager::class.java)
@@ -253,7 +278,7 @@ object Engine {
                 // links or the proof-of-origin session may have gone stale: start over with fresh ones
                 StreamCache.remove(t.item.url)
                 poProvider?.invalidate()
-                onProgress(0f, 0)
+                onProgress(0f, 0L, 0L, 0L)
             }
         }
         throw DownloadFailed(last?.message ?: "Download failed", log.toString())
@@ -263,7 +288,7 @@ object Engine {
         ctx: Context,
         t: DownloadTask,
         token: CancelToken,
-        onProgress: (Float, Long) -> Unit,
+        onProgress: (Float, Long, Long, Long) -> Unit,
         attempt: Int,
         log: StringBuilder,
     ): String {
@@ -295,7 +320,7 @@ object Engine {
                     progress.total = muxedFallback.bytes.coerceAtLeast(1)
                     fetchFile(muxedFallback.video.content, muxedFallback.bytes, raw, o.threads, token, progress)
                     token.check()
-                    muxChecked(null, raw, outFile, false, token, 50_000L)
+                    muxChecked(null, raw, outFile, false, token, 50_000L, log)
                     fallbackNote = " (sound taken from a combined stream)"
                 } else {
                     val stream = if (attempt == 2) (a.alts.firstOrNull() ?: a.stream) else a.stream
@@ -304,7 +329,7 @@ object Engine {
                     progress.total = streamBytesOf(stream).coerceAtLeast(1)
                     val len = fetchFile(stream.content, streamBytesOf(stream), raw, o.threads, token, progress)
                     token.check()
-                    muxChecked(null, raw, outFile, false, token, len / 2)
+                    muxChecked(null, raw, outFile, false, token, len / 2, log)
                 }
             } else {
                 val v0 = pickVideo(opts, o.videoHeight) ?: throw IllegalStateException("No video stream found")
@@ -327,10 +352,10 @@ object Engine {
                     val al = fetchFile(aStream.content, streamBytesOf(aStream), af, o.threads, token, progress)
                     progress.total = (vl + al).coerceAtLeast(1)
                     token.check()
-                    muxChecked(vf, af, outFile, v.webm, token, (vl + al) / 2)
+                    muxChecked(vf, af, outFile, v.webm, token, (vl + al) / 2, log)
                 }
             }
-            onProgress(0.95f, 0)
+            onProgress(0.95f, 0L, progress.done.get(), progress.total)
             token.check()
 
             // artwork + tags (each can be switched off in Settings)

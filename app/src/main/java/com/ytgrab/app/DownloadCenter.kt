@@ -60,11 +60,13 @@ object DownloadCenter {
         tokens[t.id] = token
         update(t.id) { it.copy(state = TaskState.RUNNING, message = "Starting…", progress = 0f) }
         try {
-            val msg = Engine.download(app, t, token) { p, eta ->
+            val msg = Engine.download(app, t, token) { p, eta, done, total ->
                 update(t.id) {
                     it.copy(
                         progress = p.coerceIn(0f, 1f),
                         etaSec = eta,
+                        doneBytes = done,
+                        totalBytes = total,
                         message = if (p >= 0.94f) "Merging / adding artwork…" else "",
                     )
                 }

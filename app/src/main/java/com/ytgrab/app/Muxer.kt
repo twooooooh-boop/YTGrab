@@ -91,4 +91,25 @@ object Muxer {
             runCatching { muxer.release() }
         }
     }
+
+    /** Opens a finished file and reads a few samples, so a broken result is never saved. */
+    fun verify(f: File) {
+        val ex = MediaExtractor()
+        try {
+            ex.setDataSource(f.absolutePath)
+            if (ex.trackCount == 0) throw IllegalStateException("the result has no tracks")
+            for (i in 0 until ex.trackCount) ex.selectTrack(i)
+            val buf = ByteBuffer.allocate(8 * 1024 * 1024)
+            var n = 0
+            while (n < 30) {
+                val size = ex.readSampleData(buf, 0)
+                if (size < 0) break
+                n++
+                if (!ex.advance()) break
+            }
+            if (n == 0) throw IllegalStateException("the result has no readable samples")
+        } finally {
+            runCatching { ex.release() }
+        }
+    }
 }

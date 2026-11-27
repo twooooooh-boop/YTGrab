@@ -28,6 +28,8 @@ data class DownloadTask(
     val etaSec: Long = 0,
     val message: String = "",
     val details: String = "",
+    val doneBytes: Long = 0,
+    val totalBytes: Long = 0,
 )
 
 class CancelToken {
@@ -44,6 +46,8 @@ fun fmtDur(s: Long): String = when {
 }
 
 data class QOpt(val key: String, val title: String, val sub: String)
+
+fun fmtEta(s: Long): String = if (s >= 60) "${s / 60}m ${s % 60}s" else "${s}s"
 
 fun fmtSize(b: Long): String = when {
     b <= 0 -> ""
