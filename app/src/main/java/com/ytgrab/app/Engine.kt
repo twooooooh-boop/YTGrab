@@ -15,8 +15,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.schabi.newpipe.extractor.NewPipe
+import org.schabi.newpipe.extractor.Page
 import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.StreamingService
+import org.schabi.newpipe.extractor.linkhandler.SearchQueryHandler
 import org.schabi.newpipe.extractor.localization.ContentCountry
 import org.schabi.newpipe.extractor.localization.Localization
 import org.schabi.newpipe.extractor.playlist.PlaylistInfo
@@ -30,6 +32,17 @@ import java.io.File
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicLong
 
+/** What is needed to ask YouTube for the next page of the same search. */
+class MoreToken(val handler: SearchQueryHandler, val page: Page)
+
+/** One page of search results plus what YouTube said about the query. */
+class SearchPage(
+    val items: List<SearchItem>,
+    val corrected: String? = null,     // "Showing results for ..."
+    val didYouMean: String? = null,    // "Did you mean ...?"
+    val more: MoreToken? = null,
+)
+
 /** YouTube access through the NewPipe extractor: search, stream list, download, mux, tag. */
 object Engine {
     val status = MutableStateFlow("Starting engine…")
@@ -39,7 +52,7 @@ object Engine {
     fun init(app: Context) {
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                NewPipe.init(NpDownloader(), Localization.DEFAULT, ContentCountry.DEFAULT)
+                applyRegion()
                 val provider = WebPoTokenProvider(app.applicationContext)
                 poProvider = provider
                 YoutubeStreamExtractor.setPoTokenProvider(provider)
@@ -49,6 +62,13 @@ object Engine {
                 status.value = "Engine failed to start: ${e.message}"
             }
         }
+    }
+
+    /** Tells YouTube which country to rank results for (this phone's, or the one chosen in Settings). */
+    fun applyRegion() {
+        val device = java.util.Locale.getDefault().country
+        val code = if (Prefs.searchRegion == "auto") device.ifBlank { "US" } else Prefs.searchRegion
+        NewPipe.init(NpDownloader(), Localization.DEFAULT, ContentCountry(code))
     }
 
     // ---------- search ----------
@@ -71,9 +91,16 @@ object Engine {
         thumb = thumbnails.maxByOrNull { it.height }?.url ?: "",
     )
 
-    suspend fun search(query: String): List<SearchItem> = withContext(Dispatchers.IO) {
+    private fun runSearch(svc: StreamingService, q: String, filters: List<String>): Pair<SearchInfo, SearchQueryHandler> {
+        val handler = svc.searchQHFactory.fromQuery(q, filters, "")
+        return SearchInfo.getInfo(svc, handler) to handler
+    }
+
+    private fun videosOf(info: SearchInfo): List<StreamInfoItem> = info.relatedItems.filterIsInstance<StreamInfoItem>()
+
+    suspend fun search(query: String): SearchPage = withContext(Dispatchers.IO) {
         if (!ready.value) throw IllegalStateException(status.value)
-        val q = query.trim()
+        val q = query.trim().replace(Regex("\\s+"), " ")
         val svc = ServiceList.YouTube
         if (q.startsWith("http://") || q.startsWith("https://")) {
             when (svc.getLinkTypeByUrl(q)) {
@@ -81,19 +108,52 @@ object Engine {
                     val info = StreamInfo.getInfo(q)
                     StreamCache.put(info.url, info)
                     StreamCache.put(q, info)
-                    listOf(info.toItem())
+                    SearchPage(listOf(info.toItem()))
                 }
                 StreamingService.LinkType.PLAYLIST -> {
                     val pl = PlaylistInfo.getInfo(svc, q)
-                    pl.relatedItems.filterIsInstance<StreamInfoItem>().map { it.toItem() }
+                    SearchPage(pl.relatedItems.filterIsInstance<StreamInfoItem>().map { it.toItem() })
                 }
                 else -> throw IllegalStateException("Paste a video or playlist link")
             }
         } else {
-            val handler = svc.searchQHFactory.fromQuery(q, listOf(YoutubeSearchQueryHandlerFactory.VIDEOS), "")
-            val info = SearchInfo.getInfo(svc, handler)
-            info.relatedItems.filterIsInstance<StreamInfoItem>().map { it.toItem() }
+            // 1. the same search youtube.com does (all result types, we keep the videos)
+            var (info, handler) = runSearch(svc, q, emptyList())
+            var items = videosOf(info)
+            if (items.isEmpty()) {
+                val r = runSearch(svc, q, listOf(YoutubeSearchQueryHandlerFactory.VIDEOS))
+                info = r.first
+                handler = r.second
+                items = videosOf(info)
+            }
+            // 2. what YouTube says about the spelling
+            val suggestion = info.searchSuggestion?.takeIf { it.isNotBlank() }
+            var corrected: String? = if (info.isCorrectedSearch) suggestion else null
+            var didYouMean: String? = if (!info.isCorrectedSearch) suggestion else null
+            // 3. too few results: try YouTube's own spelling hint, then its top autocomplete
+            if (Prefs.autoCorrect && items.size < 4) {
+                val alt = didYouMean ?: runCatching { suggest(q).firstOrNull { !it.equals(q, ignoreCase = true) } }.getOrNull()
+                if (!alt.isNullOrBlank()) {
+                    val r = runCatching { runSearch(svc, alt, emptyList()) }.getOrNull()
+                    val better = r?.let { videosOf(it.first) }.orEmpty()
+                    if (r != null && better.size > items.size) {
+                        info = r.first
+                        handler = r.second
+                        items = better
+                        corrected = alt
+                        didYouMean = null
+                    }
+                }
+            }
+            SearchPage(items.map { it.toItem() }, corrected, didYouMean, info.nextPage?.let { MoreToken(handler, it) })
         }
+    }
+
+    /** The next page of the same search. */
+    suspend fun searchMore(token: MoreToken): SearchPage = withContext(Dispatchers.IO) {
+        val page = SearchInfo.getMoreItems(ServiceList.YouTube, token.handler, token.page)
+        val items = page.items.filterIsInstance<StreamInfoItem>().map { it.toItem() }
+        SearchPage(items, more = page.nextPage?.let { MoreToken(token.handler, it) })
     }
 
     /** Live YouTube search suggestions (the same ones youtube.com shows while you type). */

@@ -171,6 +171,16 @@ private fun Swatch(name: String, color: Color?, selected: Boolean, onClick: () -
 
 private fun toast(ctx: android.content.Context, msg: String) = Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
 
+private val REGIONS = listOf(
+    "auto" to "Auto (this phone)", "US" to "United States", "GB" to "United Kingdom", "IN" to "India",
+    "BD" to "Bangladesh", "PK" to "Pakistan", "ID" to "Indonesia", "PH" to "Philippines", "BR" to "Brazil",
+    "MX" to "Mexico", "DE" to "Germany", "FR" to "France", "ES" to "Spain", "IT" to "Italy", "TR" to "Türkiye",
+    "SA" to "Saudi Arabia", "EG" to "Egypt", "NG" to "Nigeria", "ZA" to "South Africa", "JP" to "Japan",
+    "KR" to "South Korea",
+)
+
+private fun regionLabel(code: String) = REGIONS.firstOrNull { it.first == code }?.second ?: code
+
 // ---------------------------------------------------------------- screen
 
 @Composable
@@ -226,6 +236,18 @@ fun SettingsScreen() {
             SwitchRow("Show thumbnails", "Turn off for a compact, text-only list", Prefs.showThumbs) {
                 Prefs.showThumbs = it; Prefs.save()
             }
+        } }
+
+        item { Section("Search") {
+            DropdownRow(
+                "Search region", "Decides which videos YouTube puts first",
+                REGIONS.map { it.first }, Prefs.searchRegion, { regionLabel(it) },
+            ) { Prefs.searchRegion = it; Prefs.save(); Engine.applyRegion() }
+            SwitchRow(
+                "Fix typos and find more",
+                "When few results come back, use YouTube's spelling hints and suggestions to look again",
+                Prefs.autoCorrect,
+            ) { Prefs.autoCorrect = it; Prefs.save() }
         } }
 
         item { Section("Download defaults") {

@@ -44,6 +44,8 @@ object Prefs {
     var closeAfterAdd by mutableStateOf(true)
     var openQueueAfterAdd by mutableStateOf(false)
     var saveHistory by mutableStateOf(true)
+    var searchRegion by mutableStateOf("auto")     // "auto" = this phone's country, or a 2-letter code
+    var autoCorrect by mutableStateOf(true)
     var history by mutableStateOf<List<String>>(emptyList())
 
     fun load(c: Context) {
@@ -83,6 +85,8 @@ object Prefs {
         put("closeAfterAdd", closeAfterAdd)
         put("openQueueAfterAdd", openQueueAfterAdd)
         put("saveHistory", saveHistory)
+        put("searchRegion", searchRegion)
+        put("autoCorrect", autoCorrect)
         put("history", JSONArray(history))
     }
 
@@ -115,6 +119,9 @@ object Prefs {
         closeAfterAdd = o.optBoolean("closeAfterAdd", closeAfterAdd)
         openQueueAfterAdd = o.optBoolean("openQueueAfterAdd", openQueueAfterAdd)
         saveHistory = o.optBoolean("saveHistory", saveHistory)
+        val sr = o.optString("searchRegion", searchRegion)
+        if (sr == "auto" || Regex("[A-Z]{2}").matches(sr)) searchRegion = sr
+        autoCorrect = o.optBoolean("autoCorrect", autoCorrect)
         o.optJSONArray("history")?.let { a ->
             history = (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() }.take(15)
         }
@@ -128,6 +135,7 @@ object Prefs {
         artVideo = true; artAudio = true; squareCover = true; coverQuality = 92; embedTags = true
         folder = "YTGrab"; nameTemplate = "title"
         closeAfterAdd = true; openQueueAfterAdd = false; saveHistory = true
+        searchRegion = "auto"; autoCorrect = true
         history = emptyList()
         save()
     }

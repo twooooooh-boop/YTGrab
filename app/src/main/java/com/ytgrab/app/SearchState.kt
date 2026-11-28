@@ -19,7 +19,12 @@ object SearchState {
     var error by mutableStateOf<String?>(null)
     var suggestions by mutableStateOf<List<String>>(emptyList())
     var focused by mutableStateOf(false)
+    var corrected by mutableStateOf<String?>(null)
+    var didYouMean by mutableStateOf<String?>(null)
+    var hasMore by mutableStateOf(false)
+    var loadingMore by mutableStateOf(false)
 
+    private var moreToken: MoreToken? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var suggestJob: Job? = null
 
@@ -43,6 +48,10 @@ object SearchState {
     fun clearResults() {
         results = emptyList()
         error = null
+        corrected = null
+        didYouMean = null
+        hasMore = false
+        moreToken = null
     }
 
     fun search() {
@@ -54,13 +63,46 @@ object SearchState {
         error = null
         scope.launch {
             try {
-                results = Engine.search(q)
-                if (results.isEmpty()) error = "No results."
+                val page = Engine.search(q)
+                results = page.items
+                corrected = page.corrected
+                didYouMean = page.didYouMean
+                moreToken = page.more
+                hasMore = page.more != null
+                if (results.isEmpty()) error = "No results. Try different words."
             } catch (e: Throwable) {
                 results = emptyList()
+                corrected = null
+                didYouMean = null
+                hasMore = false
+                moreToken = null
                 error = e.message?.lines()?.lastOrNull { it.isNotBlank() } ?: "Search failed"
             }
             loading = false
+        }
+    }
+
+    /** Loads the next page and adds only videos that are not already in the list. */
+    fun loadMore() {
+        val tok = moreToken ?: return
+        if (loadingMore || loading) return
+        loadingMore = true
+        scope.launch {
+            var again = false
+            try {
+                val p = Engine.searchMore(tok)
+                val known = results.map { it.url }.toHashSet()
+                val fresh = p.items.filter { it.url !in known }
+                results = results + fresh
+                moreToken = p.more
+                hasMore = p.more != null
+                again = fresh.isEmpty() && p.more != null
+            } catch (e: Throwable) {
+                moreToken = null
+                hasMore = false
+            }
+            loadingMore = false
+            if (again) loadMore()
         }
     }
 }

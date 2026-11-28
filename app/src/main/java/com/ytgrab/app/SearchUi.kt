@@ -162,12 +162,26 @@ private fun SuggestionPanel(onPick: () -> Unit) {
                 EmptyState("⌨️", "Start typing", "YouTube suggestions will show up here as you type.")
             }
         } else {
-            val list = SearchState.suggestions.filterNot { it.equals(q, ignoreCase = true) }
+            val hist = if (Prefs.saveHistory)
+                Prefs.history.filter { it.contains(q, ignoreCase = true) && !it.equals(q, ignoreCase = true) }.take(3)
+            else emptyList()
+            val list = SearchState.suggestions.filterNot { x ->
+                x.equals(q, ignoreCase = true) || hist.any { it.equals(x, ignoreCase = true) }
+            }
             PanelCard("Suggestions") {
                 PanelRow(
                     leading = { Icon(Icons.Default.Search, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary) },
                     text = q, onFill = null, onRemove = null,
                 ) { onPick() }
+                hist.forEach { h ->
+                    PanelDivider()
+                    PanelRow(
+                        leading = { Text("🕘", style = MaterialTheme.typography.bodyMedium) },
+                        text = h,
+                        onFill = { SearchState.onQueryChanged(h) },
+                        onRemove = { Prefs.removeHistory(h) },
+                    ) { SearchState.onQueryChanged(h); onPick() }
+                }
                 list.forEach { sug ->
                     PanelDivider()
                     PanelRow(
@@ -178,6 +192,26 @@ private fun SuggestionPanel(onPick: () -> Unit) {
                     ) { SearchState.onQueryChanged(sug); onPick() }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun NoteCard(text: String, action: String? = null, onAction: (() -> Unit)? = null) {
+    Card(
+        Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+    ) {
+        Row(
+            Modifier.padding(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text, Modifier.weight(1f).padding(vertical = 6.dp),
+                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+            if (action != null && onAction != null) TextButton(onClick = onAction) { Text(action) }
         }
     }
 }
@@ -231,6 +265,10 @@ fun SearchScreen() {
                     contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
+                    SearchState.corrected?.let { c -> item { NoteCard("Showing results for “$c”") } }
+                    SearchState.didYouMean?.let { d ->
+                        item { NoteCard("Did you mean “$d”?", "Search") { SearchState.onQueryChanged(d); SearchState.search() } }
+                    }
                     if (results.size > 1) {
                         item {
                             FilledTonalButton(
@@ -244,6 +282,15 @@ fun SearchScreen() {
                         }
                     }
                     items(results) { ResultRow(it) }
+                    if (SearchState.hasMore) {
+                        item {
+                            LaunchedEffect(results.size) { SearchState.loadMore() }
+                            Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                                if (SearchState.loadingMore) CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                                else TextButton(onClick = { SearchState.loadMore() }) { Text("Load more") }
+                            }
+                        }
+                    }
                 }
             }
             SearchState.error != null -> {
